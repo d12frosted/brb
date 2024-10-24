@@ -40,7 +40,7 @@
 
 This must point to a valid `vulpea' note tagged as _people_.")
 
-(defconst brb-event-tags '("wine" "event")
+(defconst brb-event-tags '("wine" "event" "barberry/public")
   "List of tags that denote event note.")
 
 ;;; * Event selection
