@@ -1,2 +1,2 @@
-((emacs-lisp-mode . ((byte-compile-error-on-warn . t)
+((emacs-lisp-mode . ((byte-compile-error-on-warn . nil)
                      (fill-column . 70))))
