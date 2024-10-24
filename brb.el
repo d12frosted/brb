@@ -35,6 +35,9 @@
 ;;; Code:
 
 (require 's)
+(require 'dash)
+(require 'cl-lib)
+(require 'vulpea)
 
 (defconst brb-currency "UAH"
   "Main currency for Barberry Garden.
@@ -89,6 +92,186 @@ Returns nil if PRICE is of different currency than `brb-currency'.
     (if neg
         (concat "-" str)
       str)))
+
+;;; * Compatibility / code migration
+;;
+;; The following code exists simply to ease the migration from private
+;; configurations to public repository.
+;;
+
+(cl-defun brb-string-table (&key
+                            data
+                            header
+                            header-sep
+                            header-sep-start
+                            header-sep-conj
+                            header-sep-end
+                            pad-type
+                            pad-str
+                            sep
+                            row-start
+                            row-end
+                            width)
+  "Format DATA as a table.
+
+HEADER is optional. When present HEADER-SEP, HEADER-SEP-START,
+HEADER-SEP-CONJ, HEADER-SEP-END control line between header and
+data.
+
+DATA is list of lists. Each column is aligned by padding with
+PAD-STR either on left or right depending on value of PAD-TYPE.
+
+The width of columns is controlled by WIDTH. If it\\='s nil, each
+column takes full width. If it\\='s a list, each element must be
+either \\='full or integer enabling truncation.
+
+Each row begins with ROW-START and ends with ROW-END. Each value
+in row is separated by SEP."
+  (let* ((all (if header (cons header data) data))
+         (n (seq-reduce
+             (lambda (r v)
+               (min r (if (eq 'sep v) r (seq-length v))))
+             all
+             (seq-length (car all))))
+         (widths (seq-reduce
+                  (lambda (r v)
+                    (if (eq 'sep v) r
+                      (seq-map-indexed
+                       (lambda (a i)
+                         (max
+                          (pcase (or (and width
+                                          (listp width)
+                                          (nth i width))
+                                     'full)
+                            (`full (length (brb-string-from a)))
+                            (n n))
+                          (or (nth i r)
+                              0)))
+                       v)))
+                  all
+                  nil))
+         (pad-str (or pad-str " "))
+         (pad-str-props (text-properties-at 0 pad-str))
+         (pad-fns (seq-map
+                   (lambda (i)
+                     (pcase (or (and pad-type
+                                     (listp pad-type)
+                                     (nth i pad-type))
+                                pad-type
+                                'left)
+                       (`left (lambda (len padding s)
+                                (let ((extra (max 0 (- len (length s)))))
+                                  (concat
+                                   (apply #'propertize
+                                          (make-string extra (string-to-char padding))
+                                          pad-str-props)
+                                   s))))
+                       (`right (lambda (len padding s)
+                                 (let ((extra (max 0 (- len (length s)))))
+                                   (concat
+                                    s
+                                    (apply #'propertize
+                                           (make-string extra (string-to-char padding))
+                                           pad-str-props)))))))
+                   (-iota n)))
+         (row-start (or row-start ""))
+         (row-end (or row-end ""))
+         (sep (or sep " ")))
+    (concat
+     ;; header
+     (when header
+       (brb-string-table--format-line header
+         :sep sep
+         :pad-fns pad-fns
+         :pad-str pad-str
+         :widths widths
+         :row-start row-start
+         :row-end row-end))
+     (when header "\n")
+     (when (and header header-sep)
+       (brb-string-table--format-line (-repeat n "")
+         :sep (or header-sep-conj sep)
+         :pad-fns pad-fns
+         :pad-str header-sep
+         :widths widths
+         :row-start (or header-sep-start row-start)
+         :row-end (or header-sep-end row-end)))
+     (when (and header header-sep) "\n")
+     ;; data
+     (mapconcat
+      (lambda (v)
+        (if (and (eq 'sep v) header header-sep)
+            (brb-string-table--format-line (-repeat n "")
+              :sep (or header-sep-conj sep)
+              :pad-fns pad-fns
+              :pad-str header-sep
+              :widths widths
+              :row-start (or header-sep-start row-start)
+              :row-end (or header-sep-end row-end))
+          (brb-string-table--format-line (seq-take v n)
+            :sep sep
+            :pad-fns pad-fns
+            :pad-str pad-str
+            :widths widths
+            :row-start row-start
+            :row-end row-end)))
+      data
+      "\n"))))
+
+(cl-defun brb-string-table--format-line (values
+                                         &key
+                                         sep
+                                         pad-fns
+                                         pad-str
+                                         widths
+                                         row-start
+                                         row-end)
+  "Format lines consisting of VALUES.
+
+Line begins with optional ROW-START and ends with optional
+ROW-END.
+
+Each value is padded with PAD-STR using PAD-FNS to achieve cell
+WIDTHS. Each value is separated by SEP."
+  (declare (indent 1))
+  (concat
+   row-start
+   (string-join
+    (seq-map-indexed
+     (lambda (a i)
+       (let* ((width-max (nth i widths))
+              (str (brb-string-from a)))
+         (s-truncate
+          width-max
+          (funcall (nth i pad-fns)
+                   width-max
+                   pad-str
+                   str)
+          (propertize "..."
+                      'help-echo str))))
+     values)
+    sep)
+   row-end))
+
+(defun brb-string-from (value)
+  "Convert VALUE to string."
+  (cond
+   ((stringp value) value)
+   ((numberp value) (number-to-string value))
+   ((symbolp value) (symbol-name value))
+   ((vulpea-note-p value) (brb-vulpea-buttonize value))
+   (t (user-error
+       "Unsupported type of \"%s\"" value))))
+
+(defun brb-vulpea-buttonize (note &optional title-fn)
+  "Create a link to `vulpea' NOTE.
+
+Title is calculated based on TITLE-FN (takes note as a single
+parameter), defaulting to `vulpea-note-title'."
+  (buttonize (funcall (or title-fn #'vulpea-note-title)
+                      note)
+             #'vulpea-visit
+             (vulpea-note-id note)))
 
 (provide 'brb)
 ;;; brb.el ends here
