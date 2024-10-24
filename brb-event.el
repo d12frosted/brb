@@ -22,10 +22,11 @@
 
 ;;; Commentary:
 ;;
-;; In addition to its focus on wines, events are a core component of Barberry
-;; Garden. This module provides various functions to query, create, and manage
-;; events. Most importantly, it offers the ability to retrieve detailed event
-;; information, including statistics and reports.
+;; In addition to its focus on wines, events are a core component of
+;; Barberry Garden. This module provides various functions to query,
+;; create, and manage events. Most importantly, it offers the ability
+;; to retrieve detailed event information, including statistics and
+;; reports.
 ;;
 
 ;;; Code:
@@ -147,11 +148,70 @@ But let's be honest. Who in the world is going to use this package?"
   "Return list of wines from EVENT."
   (vulpea-note-meta-get-list event "wines" 'note))
 
-;; * Participants
+;;; * Participants
 
 (defun brb-event-participants (event)
   "Return list of participants from EVENT."
   (vulpea-note-meta-get-list event "participants" 'note))
+
+;;; * Data
+;;
+;; There is a lot of information that is stored alongside with event which can
+;; not be stored as vulpea metadata due to non-trivial structure.
+;;
+;; Hence each event comes with an associated el file that contains all the extra
+;; data.
+;;
+;; This data is used in various modules, but modifications are done inside `brb-event-plan'.
+
+(defun brb-event--data-file (event)
+  "Return path to data file of EVENT."
+  (file-name-with-extension (vulpea-note-path event) "data.el"))
+
+(defun brb-event-data-read (event)
+  "Read data for EVENT.
+
+The result contains all the extra data for EVENT that can't be
+stored as metadata in vulpea-note. It has the following
+structure:
+
+  ((planned-participants . num)
+   (shared . (((item . str)
+               (amount . num)
+               (price . num))))
+   (personal . (((item . str)
+                 (price . num)
+                 (orders . (((participant . id)
+                             (amount . num)))))))
+   (participants . ((id . id)
+                    (fee . num)))
+   (wines . (((id . id)
+             (price-public . num)
+             (price-real . num)
+             (price-asking . num)
+             (participants . (id))
+             (type . str)
+             (ignore-scores . bool)
+             (scores . (((participant . id)
+                         (score . num)
+                         (sentiment . str))))))))"
+  (let ((file (brb-event--data-file event)))
+    (when (file-exists-p file)
+      (with-temp-buffer
+        (condition-case nil
+	    (progn
+	      (insert-file-contents file)
+              (read (current-buffer)))
+	  (error
+	   (message "Could not read data from %s" file)))))))
+
+(defun brb-event-data-write (event data)
+  "Write DATA for EVENT."
+  (let ((file (brb-event--data-file event)))
+    (with-temp-file file
+      (let ((print-level nil)
+	    (print-length nil))
+	(pp data (current-buffer))))))
 
 (provide 'brb-event)
 ;;; brb-event.el ends here
