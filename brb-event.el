@@ -213,5 +213,97 @@ structure:
 	    (print-length nil))
 	(pp data (current-buffer))))))
 
+;;; ** Statement
+;;
+;;
+
+(cl-defun brb-event-statement (event &key data participants wines host balances)
+  "Prepare statement for EVENT.
+
+DATA is loaded unless provided.
+HOST is loaded unless provided.
+PARTICIPANTS are loaded unless provided.
+WINES are loaded unless provided.
+BALANCES is a hash table."
+  (let* ((data (or data (brb-event-data-read event)))
+         (participants (or participants (brb-event-participants event)))
+         (wines (or wines (brb-event-wines event)))
+         (host (or host (vulpea-note-meta-get event "host" 'note)))
+
+         ;; calculations
+         (price (vulpea-note-meta-get event "price" 'number))
+         (wines-normal (->> data
+                            (assoc-default 'wines)
+                            (--filter (-contains-p '("welcome" "normal") (assoc-default 'type it)))))
+         (wines-extra (->> data
+                           (assoc-default 'wines)
+                           (--filter (string-equal "extra" (assoc-default 'type it)))))
+
+         (spending-shared (->> data
+                               (assoc-default 'shared)
+                               (--map (ceiling
+                                       (* (assoc-default 'amount it)
+                                          (assoc-default 'price it))))
+                               (-sum)))
+         (spending-order (->> data
+                              (alist-get 'personal)
+                              (--map
+                               (->> (alist-get 'orders it)
+                                    (-map (lambda (od)
+                                            (let ((amount (if (string-equal brb-event-narrator-id
+                                                                            (alist-get 'participant od))
+                                                              0
+                                                            (alist-get 'amount od))))
+                                              (* amount (alist-get 'price it)))))
+                                    (-sum)))
+                              (-sum)))
+         (spending-wines-public (->> wines-normal
+                                     (--map (assoc-default 'price-public it))
+                                     (--filter it)
+                                     (-sum)))
+         (spending-wines-real (->> wines-normal
+                                   (--map (assoc-default 'price-real it))
+                                   (--filter it)
+                                   (-sum)))
+         (spending-extra-public (->> wines-extra
+                                     (--map (assoc-default 'price-public it))
+                                     (--filter it)
+                                     (-sum)))
+         (spending-extra-real (->> wines-extra
+                                   (--map (assoc-default 'price-real it))
+                                   (--filter it)
+                                   (-sum)))
+         (credit-public (+ spending-wines-public spending-extra-public spending-shared))
+         (credit-real (+ spending-wines-real spending-extra-real spending-shared))
+         (debit-base (->> participants
+                          (--map (alist-get 'fee (brb-event-statement-for event it
+                                                                          :data data
+                                                                          :host host
+                                                                          :wines wines
+                                                                          :balances balances)))
+                          (-sum)))
+         (debit-extra (->> wines-extra
+                           (--map
+                            (let* ((ps (-remove-item brb-event-narrator-id (assoc-default 'participants it)))
+                                   (glass-price (ep--glass-price it)))
+                              (* glass-price (length ps))))
+                           (-sum)))
+         (debit (+ debit-base debit-extra))
+         (balance-public (- debit credit-public))
+         (balance-real (- debit credit-real)))
+    `((spending-shared . ,spending-shared)
+      (spending-order . ,spending-order)
+      (spending-wines-public . ,spending-wines-public)
+      (spending-wines-real . ,spending-wines-real)
+      (spending-extra-public . ,spending-extra-public)
+      (spending-extra-real . ,spending-extra-real)
+      (credit-public . ,credit-public)
+      (credit-real . ,credit-real)
+      (debit-base . ,debit-base)
+      (debit-extra . ,debit-extra)
+      (debit . ,debit)
+      (balance-public . ,balance-public)
+      (balance-real . ,balance-real))))
+
 (provide 'brb-event)
 ;;; brb-event.el ends here
