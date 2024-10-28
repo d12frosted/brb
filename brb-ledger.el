@@ -331,111 +331,111 @@ CODE can be passed only in non-interactive usage. See
 Return generated buffer."
   (let ((data (brb-ledger-data-read))
         (data-personal (brb-ledger-personal-data-read))
-        (buffer (or (get-buffer brb-ledger-buffer-name)
-                    (buffer-generate brb-ledger-buffer-name 'unique))))
+        (buffer (get-buffer-create brb-ledger-buffer-name)))
     (with-current-buffer buffer
-      (read-only-mode -1)
-      (save-excursion
-        (delete-region (point-min) (point-max))
+      (let ((inhibit-read-only t)
+            (pos (point)))
+        (erase-buffer)
         (insert
          (string-join
-          (list (propertize "Balance" 'face 'bold)
-                ""
-                (brb-string-table
-                 :data
-                 (-concat
-                  (list
-                   (list "Barberry Garden"
-                         (brb-ledger--format-amount (brb-ledger-data-total data))
-                         (let* ((total (brb-ledger-data-total data))
-                                (uncleared (--reduce-from
-                                            (+ acc
-                                               (or (assoc-default (vulpea-note-id it) (brb-ledger-data-balances data)) 0))
-                                            0
-                                            (brb-ledger-data-convives data)))
-                                (cleared (- total uncleared)))
-                           (concat "(" (brb-ledger--format-amount cleared) ")")))
-                   (list "Personal"
-                         (brb-ledger--format-amount (brb-ledger-personal-data-total data-personal))
-                         (concat
-                          "("
-                          (brb-ledger--format-amount
-                           (+
-                            (brb-ledger-data-total data)
-                            (brb-ledger-personal-data-total data-personal)))
-                          ")")))
-                  (->> (brb-ledger-data-convives data)
-                       (--sort
-                        (< (or (assoc-default (vulpea-note-id it) (brb-ledger-data-balances data)) 0)
-                           (or (assoc-default (vulpea-note-id other) (brb-ledger-data-balances data)) 0)))
-                       (--remove (= 0 (or (assoc-default (vulpea-note-id it) (brb-ledger-data-balances data)) 0)))
-                       (--map
-                        (list
-                         (vulpea-note-title it)
-                         (brb-ledger--format-amount
-                          (or (assoc-default (vulpea-note-id it)
-                                             (brb-ledger-data-balances data))
-                              0)
-                          :positive-face 'warning
-                          :zero-face 'success)
-                         ""))))
-                 :pad-type '(right left left)
-                 :row-start "- "
-                 :sep "  ")
-                ""
-                (propertize "Latest transactions: Barberry Garden" 'face 'bold)
-                ""
-                (brb-string-table
-                 :data (->> (brb-ledger-data-postings data)
-                            (--remove (s-prefix-p "charge" (brb-ledger-posting-description it)))
-                            (seq-reverse)
-                            (-take 36)
-                            (--map (list
-                                    (propertize (brb-ledger-posting-date it) 'face 'shadow)
-                                    (cond
-                                     ((vulpea-note-p (brb-ledger-posting-account it))
-                                      (vulpea-note-title (brb-ledger-posting-account it)))
+          (list
+           (propertize "Balance" 'face 'bold)
+           ""
+           (brb-string-table
+            :data
+            (-concat
+             (list
+              (list "Barberry Garden"
+                    (brb-ledger--format-amount (brb-ledger-data-total data))
+                    (let* ((total (brb-ledger-data-total data))
+                           (uncleared (--reduce-from
+                                       (+ acc
+                                          (or (assoc-default (vulpea-note-id it) (brb-ledger-data-balances data)) 0))
+                                       0
+                                       (brb-ledger-data-convives data)))
+                           (cleared (- total uncleared)))
+                      (concat "(" (brb-ledger--format-amount cleared) ")")))
+              (list "Personal"
+                    (brb-ledger--format-amount (brb-ledger-personal-data-total data-personal))
+                    (concat
+                     "("
+                     (brb-ledger--format-amount
+                      (+
+                       (brb-ledger-data-total data)
+                       (brb-ledger-personal-data-total data-personal)))
+                     ")")))
+             (->> (brb-ledger-data-convives data)
+                  (--sort
+                   (< (or (assoc-default (vulpea-note-id it) (brb-ledger-data-balances data)) 0)
+                      (or (assoc-default (vulpea-note-id other) (brb-ledger-data-balances data)) 0)))
+                  (--remove (= 0 (or (assoc-default (vulpea-note-id it) (brb-ledger-data-balances data)) 0)))
+                  (--map
+                   (list
+                    (vulpea-note-title it)
+                    (brb-ledger--format-amount
+                     (or (assoc-default (vulpea-note-id it)
+                                        (brb-ledger-data-balances data))
+                         0)
+                     :positive-face 'warning
+                     :zero-face 'success)
+                    ""))))
+            :pad-type '(right left left)
+            :row-start "- "
+            :sep "  ")
+           ""
+           (propertize "Latest transactions: Barberry Garden" 'face 'bold)
+           ""
+           (brb-string-table
+            :data (->> (brb-ledger-data-postings data)
+                       (--remove (s-prefix-p "charge" (brb-ledger-posting-description it)))
+                       (seq-reverse)
+                       (-take 36)
+                       (--map (list
+                               (propertize (brb-ledger-posting-date it) 'face 'shadow)
+                               (cond
+                                ((vulpea-note-p (brb-ledger-posting-account it))
+                                 (vulpea-note-title (brb-ledger-posting-account it)))
 
-                                     ((vulpea-note-p (brb-ledger-posting-description it))
-                                      (vulpea-note-title (brb-ledger-posting-description it)))
+                                ((vulpea-note-p (brb-ledger-posting-description it))
+                                 (vulpea-note-title (brb-ledger-posting-description it)))
 
-                                     (t (brb-ledger-posting-description it)))
-                                    (brb-ledger--format-amount (brb-ledger-posting-amount it))
-                                    "->"
-                                    (brb-ledger--format-amount (brb-ledger-posting-total it)))))
-                 :width '(nil 70 nil nil nil)
-                 :pad-type '(left right left left left)
-                 :row-start "- "
-                 :sep "  ")
-                ""
-                (propertize "Latest transactions: personal" 'face 'bold)
-                ""
-                (brb-string-table
-                 :data (->> (brb-ledger-personal-data-postings data-personal)
-                            (seq-reverse)
-                            (-take 36)
-                            (--map (list
-                                    (propertize (brb-ledger-posting-date it) 'face 'shadow)
-                                    (if (vulpea-note-p (brb-ledger-posting-account it))
-                                        (vulpea-note-title (brb-ledger-posting-account it))
-                                      (brb-ledger-posting-description it))
-                                    (brb-ledger--format-amount (brb-ledger-posting-amount it))
-                                    "->"
-                                    (brb-ledger--format-amount (brb-ledger-posting-total it)))))
-                 :width '(nil 70 nil nil nil)
-                 :pad-type '(left right left left left)
-                 :row-start "- "
-                 :sep "  "))
-          "\n")))
-      (read-only-mode +1))
-    buffer))
+                                (t (brb-ledger-posting-description it)))
+                               (brb-ledger--format-amount (brb-ledger-posting-amount it))
+                               "->"
+                               (brb-ledger--format-amount (brb-ledger-posting-total it)))))
+            :width '(nil 70 nil nil nil)
+            :pad-type '(left right left left left)
+            :row-start "- "
+            :sep "  ")
+           ""
+           (propertize "Latest transactions: personal" 'face 'bold)
+           ""
+           (brb-string-table
+            :data (->> (brb-ledger-personal-data-postings data-personal)
+                       (seq-reverse)
+                       (-take 36)
+                       (--map (list
+                               (propertize (brb-ledger-posting-date it) 'face 'shadow)
+                               (if (vulpea-note-p (brb-ledger-posting-account it))
+                                   (vulpea-note-title (brb-ledger-posting-account it))
+                                 (brb-ledger-posting-description it))
+                               (brb-ledger--format-amount (brb-ledger-posting-amount it))
+                               "->"
+                               (brb-ledger--format-amount (brb-ledger-posting-total it)))))
+            :width '(nil 70 nil nil nil)
+            :pad-type '(left right left left left)
+            :row-start "- "
+            :sep "  "))
+          "\n"))
+        (goto-char pos))
+      (read-only-mode +1))))
 
 ;;;###autoload
 (defun brb-ledger-display ()
   "Display Barberry Garden ledger."
   (interactive)
-  (let ((buffer (brb-ledger-buffer-create)))
-    (switch-to-buffer buffer)))
+  (brb-ledger-buffer-create)
+  (switch-to-buffer brb-ledger-buffer-name))
 
 ;;; ** Utils
 
