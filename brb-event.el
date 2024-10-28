@@ -214,8 +214,6 @@ structure:
 	(pp data (current-buffer))))))
 
 ;;; ** Statement
-;;
-;;
 
 (cl-defun brb-event-statement (event &key data participants wines host balances)
   "Prepare statement for EVENT.
@@ -231,7 +229,7 @@ BALANCES is a hash table."
          (host (or host (vulpea-note-meta-get event "host" 'note)))
 
          ;; calculations
-         (price (vulpea-note-meta-get event "price" 'number))
+         ;; (price (vulpea-note-meta-get event "price" 'number))
          (wines-normal (->> data
                             (assoc-default 'wines)
                             (--filter (-contains-p '("welcome" "normal") (assoc-default 'type it)))))
@@ -285,7 +283,7 @@ BALANCES is a hash table."
          (debit-extra (->> wines-extra
                            (--map
                             (let* ((ps (-remove-item brb-event-narrator-id (assoc-default 'participants it)))
-                                   (glass-price (ep--glass-price it)))
+                                   (glass-price (brb-event--glass-price it)))
                               (* glass-price (length ps))))
                            (-sum)))
          (debit (+ debit-base debit-extra))
@@ -304,6 +302,124 @@ BALANCES is a hash table."
       (debit . ,debit)
       (balance-public . ,balance-public)
       (balance-real . ,balance-real))))
+
+;;;###autoload
+(cl-defun brb-event-empty-statement-for (event participant balances)
+  "Prepare statement for PARTICIPANT of EVENT.
+
+DATA is loaded unless provided.
+WINES is a list of `vulpea-note'. Loaded unless provided.
+BALANCES is a hash table."
+  (let* ((use-balance (pcase (or (vulpea-note-meta-get event "use balance") "true")
+                        ("true" t)
+                        (_ nil)))
+         (pid (vulpea-note-id participant))
+         (fee 0)
+         (mode "normal")
+         (order nil)
+         (extra nil)
+         (balance (if use-balance
+                      (or (gethash pid balances) 0)
+                    0))
+         (total 0)
+         (due 0)
+         (balance-final balance))
+    `((balance . ,balance)
+      (balance-final . ,balance-final)
+      (mode . ,mode)
+      (fee . ,fee)
+      (order . ,order)
+      (extra . ,extra)
+      (total . ,total)
+      (due . ,due))))
+
+(cl-defun brb-event-statement-for (event participant &key data host wines balances)
+  "Empty statement for PARTICIPANT of EVENT.
+
+DATA is loaded unless provided.
+HOST is a `vulpea-note'. Loaded unless provided.
+WINES is a list of `vulpea-note'. Loaded unless provided.
+BALANCES is a hash table."
+  (let* ((data (or data (brb-event-data-read event)))
+         (use-balance (pcase (or (vulpea-note-meta-get event "use balance") "true")
+                        ("true" t)
+                        (_ nil)))
+         (host (or host (vulpea-note-meta-get event "host" 'note)))
+         (wines (or wines (brb-event-wines event)))
+         (host-id (when host (vulpea-note-id host)))
+         (pid (vulpea-note-id participant))
+         (price (or (vulpea-note-meta-get event "price" 'number) 0))
+         (host-p (string-equal pid host-id))
+         (fee (if host-p
+                  0
+                (or (->> data
+                         (alist-get 'participants)
+                         (--find (string-equal pid (alist-get 'id it)))
+                         (alist-get 'fee))
+                    price)))
+         (mode (cond
+                (host-p "host")
+                ((/= fee price) "custom")
+                (t "normal")))
+         (order (->> data
+                     (alist-get 'personal)
+                     (--map
+                      (let* ((od (->> (alist-get 'orders it)
+                                      (--find (string-equal pid (alist-get 'participant it)))))
+                             (amount (or (when od (alist-get 'amount od))
+                                         0)))
+                        `((item . ,(alist-get 'item it))
+                          (price . ,(alist-get 'price it))
+                          (amount . ,amount)
+                          (total . ,(* amount (alist-get 'price it))))))
+                     (--filter (> (alist-get 'amount it) 0))))
+         (extra (->> data
+                     (alist-get 'wines)
+                     (--filter (string-equal "extra" (assoc-default 'type it)))
+                     (--filter (-contains-p (assoc-default 'participants it) pid))
+                     (--map
+                      (let* ((ps (alist-get 'participants it))
+                             (wid (alist-get 'id it))
+                             (price (or (alist-get 'price-asking it)
+                                        (alist-get 'price-public it)))
+                             (glass-price (ceiling (/ price (float (length ps)))))
+                             (wine (--find (string-equal wid (vulpea-note-id it)) wines)))
+                        `((glass-price . ,glass-price)
+                          (amount . 1)
+                          (total . ,glass-price)
+                          (wine . ,wine))))
+                     (--filter (alist-get 'wine it))))
+         (balance (if use-balance
+                      (or (gethash pid balances) 0)
+                    0))
+         (total (+ fee
+                   (-sum (--map (alist-get 'total it) order))
+                   (-sum (--map (alist-get 'glass-price it) extra))))
+         (due (max 0 (- total balance)))
+         (balance-final (- balance total)))
+    `((balance . ,balance)
+      (balance-final . ,balance-final)
+      (mode . ,mode)
+      (fee . ,fee)
+      (order . ,order)
+      (extra . ,extra)
+      (total . ,total)
+      (due . ,due))))
+
+(cl-defun brb-event--glass-price (data)
+  "Calculate glass price of an extra wine.
+
+DATA is an alist with the following fields:
+
+- price-asking - optional number
+- price-public - number
+- participants - amount of participating that pay for wine
+
+Result is always a number."
+  (let* ((price (or (assoc-default 'price-asking data)
+                    (assoc-default 'price-public data)))
+         (ps (assoc-default 'participants data)))
+    (if ps (ceiling (/ price (float (length ps)))) 0)))
 
 (provide 'brb-event)
 ;;; brb-event.el ends here
