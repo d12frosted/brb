@@ -36,8 +36,13 @@
 
 (require 's)
 (require 'dash)
-(require 'cl-lib)
+
 (require 'vulpea)
+
+(require 'cl-lib)
+
+(require 'calc)
+(require 'calc-stat)
 
 (defconst brb-currency "UAH"
   "Main currency for Barberry Garden.
@@ -92,6 +97,39 @@ Returns nil if PRICE is of different currency than `brb-currency'.
     (if neg
         (concat "-" str)
       str)))
+
+;;; * QPR
+
+(defun brb-qpr (price score wine)
+  "Calculate QPR.
+
+SCORE is a rational number in [0, 5].
+PRICE is a positive number in `brb-currency'.
+WINE is a note representing wine.
+
+QPR is adjusted to account for VOLUME."
+  (when (and score price (> price 0) (> score 0))
+    (let* ((volume (or (vulpea-note-meta-get wine "volume" 'number) 750))
+           (appellation (vulpea-note-meta-get wine "appellation"))
+           (multiplier (if (and appellation
+                                (seq-contains-p
+                                 '("Champagne AOC")
+                                 (nth 3 (s-match org-link-any-re appellation))))
+                           2500
+                         1600))
+           (price (* price (/ 750.0 volume)))
+           (p (calc-from-number (float price)))
+           (s (calc-from-number (float score))))
+      (calc-to-number
+       (math-div
+        (math-sqrt
+         (math-div
+          (math-mul
+           multiplier
+           (math-mul (math-pow (calcFunc-fact s) (math-add 1 (math-phi)))
+                     (calcFunc-ln (math-add (calc-from-number 1.1) s))))
+          p))
+        100)))))
 
 ;;; * Compatibility / code migration
 ;;
@@ -272,6 +310,14 @@ parameter), defaulting to `vulpea-note-title'."
                       note)
              #'vulpea-visit
              (vulpea-note-id note)))
+
+(defun calc-from-number (number)
+  "Convert NUMBER to Calc format."
+  (math-read-number (number-to-string number)))
+
+(defun calc-to-number (number)
+  "Convert NUMBER from Calc format."
+  (read (math-format-number number)))
 
 (provide 'brb)
 ;;; brb.el ends here
