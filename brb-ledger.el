@@ -168,7 +168,7 @@ CODE can be passed only in non-interactive usage. See
     (when (get-buffer brb-ledger-buffer-name)
       (brb-ledger-buffer-create))))
 
-;;; * Spending
+;;; * Spending API
 
 ;;;###autoload
 (cl-defun brb-ledger-spend (&key amount date comment code)
@@ -215,6 +215,112 @@ CODE can be passed only in non-interactive usage. See
      :amount amount)
     (when (get-buffer brb-ledger-buffer-name)
       (brb-ledger-buffer-create))))
+
+(cl-defun brb-ledger-buy-wine (&key wine price date code)
+  "Buy a WINE from personal account.
+
+PRICE is the actual purchase price. It must be in `brb-currency'.
+
+DATE is purchase date (internal time).
+
+See `brb-ledger-record-txn' to learn about CODE."
+  (let* ((wine-id (if (vulpea-note-p wine)
+                      (vulpea-note-id wine)
+                    wine)))
+    (brb-ledger-record-txn
+     :date date
+     :code code
+     :comment (concat "[" wine-id "]")
+     :account-to "spending:wines"
+     :account-from "personal:account"
+     :amount price)))
+
+;;; * Balance API
+
+;;;###autoload
+(cl-defun brb-ledger-balance-of (convive &optional date)
+  "Return balance of a given CONVIVE.
+
+Optionally return the balance on DATE (inclusive).
+
+Result is a number in `brb-currency'."
+  (let* ((id (if (vulpea-note-p convive) (vulpea-note-id convive) convive))
+         (cmds (if date
+                   (let* ((time0 (if (stringp date) (date-to-time date) date))
+                          (time1 (time-add time0 (* 60 60 24))))
+                     (list
+                      (format "hledger -f %s balance balance:%s -e %s"
+                              brb-ledger-file
+                              id
+                              (format-time-string "%Y-%m-%d" time0))
+                      (format "hledger -f %s balance balance:%s -b %s -e %s 'not:desc:charge'"
+                              brb-ledger-file
+                              id
+                              (format-time-string "%Y-%m-%d" time0)
+                              (format-time-string "%Y-%m-%d" time1))))
+                 (list
+                  (format "hledger -f %s balance balance:%s" brb-ledger-file id)))))
+    (->> cmds
+         (--map
+          (->> it
+               (shell-command-to-string)
+               (s-trim)
+               (s-lines)
+               (-last-item)
+               (string-to-number)))
+         (--reduce-from (+ acc it) 0))))
+
+;;; * Various balance-changing utils
+
+(cl-defun brb-ledger-buy-wines-for (&key convive
+                                         spend-amount
+                                         charge-amount
+                                         date)
+  "Buy wines for CONVIVE.
+
+Spend SPEND-AMOUNT on DATE and charge CHARGE-AMOUNT said CONVIVE.
+
+Basically a convenient shortcut for charge + spend."
+  (interactive)
+  (let* ((name (unless convive
+                 (seq-find
+                  (lambda (str)
+                    (and (not (s-matches-p "[0-9]\\{4\\}-[0-9]\\{2\\}-[0-9]\\{2\\}" str))
+                         (not (s-suffix-p brb-currency str))))
+                  (s-split
+                   "  "
+                   (s-chop-prefix "- " (buffer-substring-no-properties (line-beginning-position) (line-end-position)))
+                   t))))
+         (convive (or convive
+                      (vulpea-select-from
+                       "People"
+                       (vulpea-db-query-by-tags-some '("people"))
+                       :require-match t
+                       :initial-prompt name)))
+         (spend-amount (or spend-amount (read-number "Spend amount: ")))
+         (charge-amount (or charge-amount (read-number "Charge amount: ")))
+         (date (or date (org-read-date nil t))))
+    (brb-ledger-spend :amount spend-amount
+                      :date date
+                      :comment (concat "Wine for " (vulpea-note-title convive)))
+    (brb-ledger-charge :convive convive
+                       :amount charge-amount
+                       :date date)))
+
+(cl-defun brb-ledger-receive-present (&optional source amount date)
+  "Receive AMOUNT as a present from SOURCE on a DATE."
+  (interactive)
+  (let* ((source (or source
+                     (vulpea-select "Source" :require-match t)))
+         (amount (or amount (read-number "Amount: ")))
+         (date (or date (org-read-date nil t))))
+    (brb-ledger-record-txn
+     :date date
+     :comment "present"
+     :account-to "balance:assets"
+     :account-from (concat "source:" (vulpea-note-id source))
+     :amount amount)
+    (brb-ledger-buffer-create)))
 
 ;;; * Ledger UI
 ;;
