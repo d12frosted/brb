@@ -40,7 +40,6 @@
 (require 'vulpea)
 
 (require 'cl-lib)
-
 (require 'calc)
 (require 'calc-stat)
 

@@ -31,8 +31,8 @@
 
 ;;; Code:
 
-(require 'brb)
 (require 'vulpea)
+(require 'brb)
 
 ;;; * Configurations
 
@@ -481,6 +481,153 @@ Result is always a number."
                     (assoc-default 'price-public data)))
          (ps (assoc-default 'participants data)))
     (if ps (ceiling (/ price (float (length ps)))) 0)))
+
+;;; ** Summary
+
+(defun brb-event-summary (event)
+  "Return score summary of EVENT."
+  (let* ((data (brb-event-data-read event))
+         (wines (brb-event-wines event))
+         (participants (brb-event-participants event))
+         (weight-def 2)
+         (weights (->> participants
+                       (--map
+                        (let ((weight (or (vulpea-note-meta-get
+                                           it
+                                           "tasting level"
+                                           'number)
+                                          weight-def)))
+                          `((participant . ,(vulpea-note-id it))
+                            (weight . ,(calc-from-number (* weight weight))))))))
+         (wines-data (->>
+                      wines
+                      (-map
+                       (lambda (wine)
+                         (let ((data (--find (string-equal (vulpea-note-id wine) (alist-get 'id it))
+                                             (alist-get 'wines data))))
+                           (unless data
+                             (error "Could not find scores data for %s" (vulpea-note-id wine)))
+                           (let* ((scores (->> data
+                                               (alist-get 'scores)
+                                               (--map (alist-get 'score it))
+                                               (--filter it)
+                                               (-map #'calc-from-number)))
+                                  (amean (when scores
+                                           (calc-to-number (apply #'calcFunc-vmean scores))))
+                                  (rms (when scores
+                                         (calc-to-number (calcFunc-rms (apply #'calcFunc-vec scores)))))
+                                  (use-weights (pcase (vulpea-note-meta-get event "weights")
+                                                 (`"false" nil)
+                                                 (_ t)))
+                                  (weights-sum (->> weights
+                                                    (--filter (-contains-p
+                                                               (->> data
+                                                                    (alist-get 'scores)
+                                                                    (--filter (alist-get 'score it))
+                                                                    (--map (alist-get 'participant it)))
+                                                               (alist-get 'participant it)))
+                                                    (--map (if use-weights (alist-get 'weight it) 1))
+                                                    (apply #'calcFunc-vec)
+                                                    (calcFunc-vsum)
+                                                    (calc-to-number)))
+                                  (wtotal (->> data
+                                               (alist-get 'scores)
+                                               (--filter (alist-get 'score it))
+                                               (--map
+                                                (let* ((pid (alist-get 'participant it))
+                                                       (weight-data (--find
+                                                                     (string-equal pid (alist-get 'participant it))
+                                                                     weights)))
+                                                  (unless weight-data
+                                                    (error "Could not find weight data for participant %s for '%s' event" pid (vulpea-note-title event)))
+                                                  (calcFunc-mul (if use-weights (assoc-default 'weight weight-data) 1)
+                                                                (assoc-default 'score it))))
+                                               (apply #'calcFunc-vec)
+                                               (calcFunc-vsum)))
+                                  (wavg (when (and scores (> weights-sum 0)) (/ wtotal weights-sum)))
+                                  (price (alist-get 'price-public data))
+                                  (qpr (brb-qpr price wavg wine))
+                                  (sdev (when scores
+                                          (calc-to-number (apply #'calcFunc-vpvar scores))))
+                                  (fav (->> data
+                                            (alist-get 'scores)
+                                            (--map (alist-get 'sentiment it))
+                                            (--count (string-equal "favourite" it))))
+                                  (out (->> data
+                                            (alist-get 'scores)
+                                            (--map (alist-get 'sentiment it))
+                                            (--count (string-equal "outcast" it))))
+                                  (pscores (->>
+                                            participants
+                                            (--map
+                                             (let* ((pid (vulpea-note-id it))
+                                                    (sd (--find
+                                                         (string-equal pid (alist-get 'participant it))
+                                                         (alist-get 'scores data))))
+                                               `((participant . ,it)
+                                                 (score . ,(alist-get 'score sd))
+                                                 (sentiment . ,(alist-get 'sentiment sd))))))))
+                             `((wine . ,wine)
+                               (ignore-scores . ,(alist-get 'ignore-scores data))
+                               (type . ,(alist-get 'type data))
+                               (amean . ,amean)
+                               (rms . ,rms)
+                               (wavg . ,wavg)
+                               (sdev . ,sdev)
+                               (fav . ,fav)
+                               (out . ,out)
+                               (price . ((amount . ,price)
+                                         (currency . ,brb-currency)))
+                               (qpr . ,qpr)
+                               (scores . ,pscores))))))))
+         (prices (->> data
+                      (alist-get 'wines)
+                      (--remove (alist-get 'ignore-scores it))
+                      (--map (alist-get 'price-public it))
+                      (--filter it)
+                      (--remove (= 0 it))))
+         (wines-price-total (when prices (-sum prices)))
+         (wines-price-harmonic (when prices
+                                 (->> prices
+                                      (-map #'calc-from-number)
+                                      (apply #'calcFunc-vec)
+                                      (calcFunc-vhmean)
+                                      (calc-to-number))))
+         (wines-price-median (when prices
+                               (->> prices
+                                    (-map #'calc-from-number)
+                                    (apply #'calcFunc-vec)
+                                    (calcFunc-vmedian)
+                                    (calc-to-number))))
+         (rms-scores (->> wines-data
+                         (--remove (alist-get 'ignore-scores it))
+                         (--map (alist-get 'rms it))
+                         (--filter it)
+                         (-map #'calc-from-number)))
+         (wavg-scores (->> wines-data
+                         (--remove (alist-get 'ignore-scores it))
+                         (--map (alist-get 'wavg it))
+                         (--filter it)
+                         (-map #'calc-from-number)))
+         (event-rms (when rms-scores
+                      (->> rms-scores
+                           (apply #'calcFunc-vec)
+                           (calcFunc-rms)
+                           (calc-to-number))))
+         (event-wavg (when wavg-scores
+                       (->> wavg-scores
+                            (apply #'calcFunc-vec)
+                            (calcFunc-rms)
+                            (calc-to-number))))
+         (event-qpr (when (and event-wavg prices)
+                      (brb-qpr wines-price-harmonic event-wavg event))))
+    `((wines . ,wines-data)
+      (wines-price-total . ,wines-price-total)
+      (wines-price-harmonic . ,wines-price-harmonic)
+      (wines-price-median . ,wines-price-median)
+      (rms . ,event-rms)
+      (wavg . ,event-wavg)
+      (qpr . ,event-qpr))))
 
 (provide 'brb-event)
 ;;; brb-event.el ends here
