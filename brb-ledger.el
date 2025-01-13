@@ -669,7 +669,9 @@ When POINT is non-nil, jump to it."
              (--map
               `(row
                 (label :value ,(brb-ledger-posting-date it))
-                (label :value ,(brb-ledger-posting-description it))
+                (label :value ,(s-chop-prefixes
+                                '("deposit: " "deposit" "charge: " "charge")
+                                (brb-ledger-posting-description it)))
                 (money-label :value ,(brb-ledger-posting-amount it))
                 (money-label :value ,(brb-ledger-posting-total it)))
               ))
