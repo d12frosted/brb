@@ -60,10 +60,37 @@
 ;;; * Configurations
 
 (defvar brb-ledger-file nil
-  "Path to Barberry Garden ledger file.")
+  "Path to Barberry Garden ledger file.
+
+Can be a string or list of two strings, where first one is for reading
+and the second one for writing.")
 
 (defvar brb-ledger-buffer-name "*Barberry Garden Balance*"
   "Name of balance buffer.")
+
+;;; * File resolution
+
+(defun brb-ledger-file--read (&optional path)
+  "Return path to ledger file for reading.
+
+Unless specified, `brb-ledger-file' is used as PATH."
+  (setq path (or path brb-ledger-file))
+  (cond
+   ((stringp path) path)
+   ((functionp path) (funcall path))
+   ((and (listp path) (= 2 (seq-length path))) (brb-ledger-file--read (nth 0 path)))
+   (t (user-error "Invalid path to ledger file: %s" path))))
+
+(defun brb-ledger-file--write (&optional path)
+  "Return path to ledger file for reading.
+
+Unless specified, `brb-ledger-file' is used as PATH."
+  (setq path (or path brb-ledger-file))
+  (cond
+   ((stringp path) path)
+   ((functionp path) (funcall path))
+   ((and (listp path) (= 2 (seq-length path))) (brb-ledger-file--write (nth 1 path)))
+   (t (user-error "Invalid path to ledger file: %s" path))))
 
 ;;; * Transaction API
 
@@ -85,7 +112,7 @@ AMOUNT is number in `brb-currency'.
 
 Transaction is recorded into `brb-ledger-file'."
   (when code
-    (with-current-buffer (find-file-noselect brb-ledger-file t)
+    (with-current-buffer (find-file-noselect (brb-ledger-file--write) t)
       (revert-buffer t t t)
       (save-excursion
         (goto-char (point-min))
@@ -107,7 +134,7 @@ Transaction is recorded into `brb-ledger-file'."
                amount
                brb-currency
                account-from
-               brb-ledger-file))
+               (brb-ledger-file--write)))
          (res (shell-command-to-string cmd)))
     (message res)))
 
@@ -250,16 +277,16 @@ Result is a number in `brb-currency'."
                           (time1 (time-add time0 (* 60 60 24))))
                      (list
                       (format "hledger -f %s balance balance:%s -e %s"
-                              brb-ledger-file
+                              (brb-ledger-file--read)
                               id
                               (format-time-string "%Y-%m-%d" time0))
                       (format "hledger -f %s balance balance:%s -b %s -e %s 'not:desc:charge'"
-                              brb-ledger-file
+                              (brb-ledger-file--read)
                               id
                               (format-time-string "%Y-%m-%d" time0)
                               (format-time-string "%Y-%m-%d" time1))))
                  (list
-                  (format "hledger -f %s balance balance:%s" brb-ledger-file id)))))
+                  (format "hledger -f %s balance balance:%s" (brb-ledger-file--read) id)))))
     (->> cmds
          (--map
           (->> it
@@ -351,7 +378,7 @@ Basically a convenient shortcut for charge + spend."
   (let* ((prefix "balance:")
          (ignored '("assets"))
 
-         (cmd-bal (format "hledger -f '%s' balance '%s'" brb-ledger-file prefix))
+         (cmd-bal (format "hledger -f '%s' balance '%s'" (brb-ledger-file--read) prefix))
          (res-bal (split-string (shell-command-to-string cmd-bal) "\n" t " +"))
          (balances (->> (-drop-last 2 res-bal)
                         (--map
@@ -362,7 +389,7 @@ Basically a convenient shortcut for charge + spend."
                         (--remove (seq-contains-p ignored (car it)))))
          (total (string-to-number (-last-item res-bal)))
 
-         (cmd-accs (format "hledger -f '%s' accounts '%s'" brb-ledger-file prefix))
+         (cmd-accs (format "hledger -f '%s' accounts '%s'" (brb-ledger-file--read) prefix))
          (res-accs (shell-command-to-string cmd-accs))
          (convives (->> (split-string res-accs "\n" t)
                         (--map (string-remove-prefix prefix it))
@@ -372,7 +399,7 @@ Basically a convenient shortcut for charge + spend."
                                  (user-error "Could not find convive with id %s" it)))))
 
          (cmd-register (format "hledger -f '%s' register -O csv -H '%s'"
-                               brb-ledger-file prefix))
+                               (brb-ledger-file--read) prefix))
          (res-register (shell-command-to-string cmd-register))
          (postings (->> (split-string res-register "\n" t)
                         (cdr)
@@ -397,12 +424,12 @@ Basically a convenient shortcut for charge + spend."
   "Read personal balance data from `brb-ledger-file'."
   (let* ((prefix "personal:")
 
-         (cmd-bal (format "hledger -f '%s' balance '%s'" brb-ledger-file prefix))
+         (cmd-bal (format "hledger -f '%s' balance '%s'" (brb-ledger-file--read) prefix))
          (res-bal (split-string (shell-command-to-string cmd-bal) "\n" t " +"))
          (total (string-to-number (-last-item res-bal)))
 
          (cmd-register (format "hledger -f '%s' register -O csv -H '%s'"
-                               brb-ledger-file prefix))
+                               (brb-ledger-file--read) prefix))
          (res-register (shell-command-to-string cmd-register))
          (postings (seq-map
                     (lambda (line)
