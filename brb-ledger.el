@@ -56,6 +56,7 @@
 (require 's)
 (require 'vulpea)
 (require 'brb)
+(require 'widget-extra)
 
 ;;; * Configurations
 
@@ -504,7 +505,11 @@ Return generated buffer."
                   (--remove (= 0 (or (assoc-default (vulpea-note-id it) (brb-ledger-data-balances data)) 0)))
                   (--map
                    (list
-                    (vulpea-note-title it)
+                    (buttonize (vulpea-note-title it)
+                               (lambda (id)
+                                 (funcall-interactively #'brb-ledger-convive-display-balance
+                                                        (vulpea-db-get-by-id id)))
+                               (vulpea-note-id it))
                     (brb-ledger--format-amount
                      (or (assoc-default (vulpea-note-id it)
                                         (brb-ledger-data-balances data))
@@ -527,7 +532,11 @@ Return generated buffer."
                                (propertize (brb-ledger-posting-date it) 'face 'shadow)
                                (cond
                                 ((vulpea-note-p (brb-ledger-posting-account it))
-                                 (vulpea-note-title (brb-ledger-posting-account it)))
+                                 (buttonize (vulpea-note-title (brb-ledger-posting-account it))
+                                            (lambda (id)
+                                              (funcall-interactively #'brb-ledger-convive-display-balance
+                                                                     (vulpea-db-get-by-id id)))
+                                            (vulpea-note-id (brb-ledger-posting-account it))))
 
                                 ((vulpea-note-p (brb-ledger-posting-description it))
                                  (vulpea-note-title (brb-ledger-posting-description it)))
@@ -603,6 +612,104 @@ Uses POSITIVE-FACE, ZERO-FACE and NEGATIVE-FACE for prettifying."
                 (t
                  (or zero-face 'warning)))))
     (propertize value 'face face)))
+
+(define-widget 'money-label 'label
+  "A note field."
+  :format-value (lambda (_widget value) (brb-price-format value))
+  :face (lambda (_widget value)
+          (cond
+           ((> value 0) 'success)
+           ((< value 0) 'warning)
+           (t 'success))))
+
+;; * Convive view
+;;
+;; Balance of specific convive
+;;
+
+(cl-defstruct brb-ledger-convive-data total postings)
+
+;;;###autoload
+(defun brb-ledger-convive-display-balance (&optional convive point)
+  "Display balance of CONVIVE.
+
+When POINT is non-nil, jump to it."
+  (interactive)
+  (let* ((convive (or convive (vulpea-select-from
+                              "People"
+                              (vulpea-db-query-by-tags-some '("people"))
+                              :require-match t)))
+         (data (brb-ledger-convive-data-read convive)))
+    (widget-buffer-setup (concat "*" (vulpea-note-title convive) " Ledger*")
+      (widget-create 'title (concat (vulpea-note-title convive) " - Ledger"))
+      (widget-create
+       'money-field
+       :format-value (lambda (_ value) (brb-ledger--format-amount value))
+       :tag "Balance:"
+       (brb-ledger-convive-data-total data))
+      (widget-insert "\n\n")
+
+      (widget-create 'heading-1 "Records")
+      (apply
+       #'widget-create
+       (-concat
+        (list 'table
+              :padding-type '((2 . left)
+                              (3 . left))
+              :truncate '((1 . 70))
+              '(hline)
+              '(row :padding-type 'right
+                (label :value "date")
+                (label :value "description")
+                (label :value "amount")
+                (label :value "balance"))
+              '(hline))
+        (->> (brb-ledger-convive-data-postings data)
+             (reverse)
+             (--map
+              `(row
+                (label :value ,(brb-ledger-posting-date it))
+                (label :value ,(brb-ledger-posting-description it))
+                (money-label :value ,(brb-ledger-posting-amount it))
+                (money-label :value ,(brb-ledger-posting-total it)))
+              ))
+        '((hline)))))
+    (when point
+      (goto-char point))))
+
+(defun brb-ledger-convive-data-read (convive)
+  "Read balance data from `brb-ledger-file' for given CONVIVE."
+  (let* ((prefix (concat "balance:" (vulpea-note-id convive)))
+         (cmd-bal (format "hledger -f '%s' balance '%s'" (brb-ledger-file--read) prefix))
+         (res-bal (split-string (shell-command-to-string cmd-bal) "\n" t " +"))
+         (total (string-to-number (-last-item res-bal)))
+
+         (cmd-register (format "hledger -f '%s' register -O csv -H '%s'"
+                               (brb-ledger-file--read) prefix))
+         (res-register (shell-command-to-string cmd-register))
+         (postings (seq-map
+                    (lambda (line)
+                      (let* ((parts (split-string-and-unquote line ","))
+                             (account (string-remove-prefix prefix (nth 4 parts)))
+                             (account (or (when (string-match org-link-bracket-re account)
+                                            (vulpea-db-get-by-id account))
+                                          account))
+                             (description (->> (nth 3 parts)
+                                               (s-chop-prefix "[")
+                                               (s-chop-suffix "]")))
+                             (description (or (when (string-match org-uuid-regexp description)
+                                                (vulpea-db-get-by-id description))
+                                              description)))
+                        (make-brb-ledger-posting
+                         :date (nth 1 parts)
+                         :description description
+                         :account account
+                         :amount (string-to-number (nth 5 parts))
+                         :total (string-to-number (nth 6 parts)))))
+                    (cdr (split-string res-register "\n" t)))))
+    (make-brb-ledger-convive-data
+     :total total
+     :postings postings)))
 
 (provide 'brb-ledger)
 ;;; brb-ledger.el ends here
