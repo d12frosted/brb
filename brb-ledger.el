@@ -56,6 +56,7 @@
 (require 's)
 (require 'vulpea)
 (require 'brb)
+(require 'brb-widget)
 (require 'widget-extra)
 
 ;;; * Configurations
@@ -613,15 +614,6 @@ Uses POSITIVE-FACE, ZERO-FACE and NEGATIVE-FACE for prettifying."
                  (or zero-face 'warning)))))
     (propertize value 'face face)))
 
-(define-widget 'money-label 'label
-  "A note field."
-  :format-value (lambda (_widget value) (brb-price-format value))
-  :face (lambda (_widget value)
-          (cond
-           ((> value 0) 'success)
-           ((< value 0) 'warning)
-           (t 'success))))
-
 ;; * Convive view
 ;;
 ;; Balance of specific convive
@@ -643,7 +635,7 @@ When POINT is non-nil, jump to it."
     (widget-buffer-setup (concat "*" (vulpea-note-title convive) " Ledger*")
       (widget-create 'title (concat (vulpea-note-title convive) " - Ledger"))
       (widget-create
-       'money-field
+       'balance-label
        :format-value (lambda (_ value) (brb-ledger--format-amount value))
        :tag "Balance:"
        (brb-ledger-convive-data-total data))
@@ -672,8 +664,8 @@ When POINT is non-nil, jump to it."
                 (label :value ,(s-chop-prefixes
                                 '("deposit: " "deposit" "charge: " "charge")
                                 (brb-ledger-posting-description it)))
-                (money-label :value ,(brb-ledger-posting-amount it))
-                (money-label :value ,(brb-ledger-posting-total it)))
+                (balance-label :value ,(brb-ledger-posting-amount it))
+                (balance-label :value ,(brb-ledger-posting-total it)))
               ))
         '((hline)))))
     (when point
