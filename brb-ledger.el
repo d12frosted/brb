@@ -351,12 +351,10 @@ Basically a convenient shortcut for charge + spend."
      :amount amount)
     (brb-ledger-buffer-create)))
 
-;;; * Ledger UI
+;;; * Data reading
 ;;
-;; A very simple and naïve ledger UI.
+;; Necessary structures and utilities to read them from hledger.
 ;;
-
-;;; ** Necessary structures
 
 (cl-defstruct brb-ledger-data
   total
@@ -365,6 +363,7 @@ Basically a convenient shortcut for charge + spend."
   postings)
 
 (cl-defstruct brb-ledger-personal-data total postings)
+(cl-defstruct brb-ledger-convive-data total postings)
 
 (cl-defstruct brb-ledger-posting
   date
@@ -372,8 +371,6 @@ Basically a convenient shortcut for charge + spend."
   account
   amount
   total)
-
-;;; ** Data manipulation
 
 (defun brb-ledger-data-read ()
   "Read balance data from `brb-ledger-file'."
@@ -400,22 +397,7 @@ Basically a convenient shortcut for charge + spend."
                                    convive
                                  (user-error "Could not find convive with id %s" it)))))
 
-         (cmd-register (format "hledger -f '%s' register -O csv -H '%s'"
-                               (brb-ledger-file--read) prefix))
-         (res-register (shell-command-to-string cmd-register))
-         (postings (->> (split-string res-register "\n" t)
-                        (cdr)
-                        (--map (let* ((parts
-                                       (split-string-and-unquote it ","))
-                                      (account (string-remove-prefix prefix (nth 4 parts)))
-                                      (account (or (vulpea-db-get-by-id account)
-                                                   account)))
-                                 (make-brb-ledger-posting
-                                  :date (nth 1 parts)
-                                  :description (nth 3 parts)
-                                  :account account
-                                  :amount (string-to-number (nth 5 parts))
-                                  :total (string-to-number (nth 6 parts))))))))
+         (postings (brb-ledger-postings-read prefix)))
     (make-brb-ledger-data
      :total total
      :convives convives
@@ -433,31 +415,54 @@ Basically a convenient shortcut for charge + spend."
          (cmd-register (format "hledger -f '%s' register -O csv -H '%s'"
                                (brb-ledger-file--read) prefix))
          (res-register (shell-command-to-string cmd-register))
-         (postings (seq-map
-                    (lambda (line)
-                      (let* ((parts (split-string-and-unquote line ","))
-                             (account (string-remove-prefix prefix (nth 4 parts)))
-                             (account (or (when (string-match org-link-bracket-re account)
-                                            (vulpea-db-get-by-id account))
-                                          account))
-                             (description (->> (nth 3 parts)
-                                               (s-chop-prefix "[")
-                                               (s-chop-suffix "]")))
-                             (description (or (when (string-match org-uuid-regexp description)
-                                                (vulpea-db-get-by-id description))
-                                              description)))
-                        (make-brb-ledger-posting
-                         :date (nth 1 parts)
-                         :description description
-                         :account account
-                         :amount (string-to-number (nth 5 parts))
-                         :total (string-to-number (nth 6 parts)))))
-                    (cdr (split-string res-register "\n" t)))))
+         (postings (brb-ledger-postings-read prefix)))
     (make-brb-ledger-personal-data
      :total total
      :postings postings)))
 
-;;; ** UI
+(defun brb-ledger-convive-data-read (convive)
+  "Read balance data from `brb-ledger-file' for given CONVIVE."
+  (let* ((prefix (concat "balance:" (vulpea-note-id convive)))
+         (cmd-bal (format "hledger -f '%s' balance '%s'" (brb-ledger-file--read) prefix))
+         (res-bal (split-string (shell-command-to-string cmd-bal) "\n" t " +"))
+         (total (string-to-number (-last-item res-bal)))
+
+         (cmd-register (format "hledger -f '%s' register -O csv -H '%s'"
+                               (brb-ledger-file--read) prefix))
+         (res-register (shell-command-to-string cmd-register))
+         (postings (brb-ledger-postings-read prefix)))
+    (make-brb-ledger-convive-data
+     :total total
+     :postings postings)))
+
+(defun brb-ledger-postings-read (prefix)
+  "Read postings for PREFIX."
+  (let* ((cmd-register (format "hledger -f '%s' register -O csv -H '%s'"
+                               (brb-ledger-file--read) prefix))
+         (res-register (shell-command-to-string cmd-register)))
+    (->> (split-string res-register "\n" t)
+         (cdr)
+         (--map (let* ((parts (split-string-and-unquote it ","))
+                       (account (string-remove-prefix prefix (nth 4 parts)))
+                       (account (or (vulpea-db-get-by-id account)
+                                    account))
+                       (description (->> (nth 3 parts)
+                                         (s-chop-prefix "[")
+                                         (s-chop-suffix "]")))
+                       (description (or (when (string-match org-uuid-regexp description)
+                                          (vulpea-db-get-by-id description))
+                                        description)))
+                  (make-brb-ledger-posting
+                   :date (nth 1 parts)
+                   :description description
+                   :account account
+                   :amount (string-to-number (nth 5 parts))
+                   :total (string-to-number (nth 6 parts))))))))
+
+;;; * Ledger UI
+;;
+;; A very simple and naïve ledger UI.
+;;
 
 ;; TODO: rewrite using `widget-ext'.
 (defun brb-ledger-buffer-create ()
@@ -526,7 +531,6 @@ Return generated buffer."
            ""
            (brb-string-table
             :data (->> (brb-ledger-data-postings data)
-                       (--remove (s-prefix-p "charge" (brb-ledger-posting-description it)))
                        (seq-reverse)
                        (-take 36)
                        (--map (list
@@ -619,8 +623,6 @@ Uses POSITIVE-FACE, ZERO-FACE and NEGATIVE-FACE for prettifying."
 ;; Balance of specific convive
 ;;
 
-(cl-defstruct brb-ledger-convive-data total postings)
-
 ;;;###autoload
 (defun brb-ledger-convive-display-balance (&optional convive point)
   "Display balance of CONVIVE.
@@ -670,40 +672,6 @@ When POINT is non-nil, jump to it."
         '((hline)))))
     (when point
       (goto-char point))))
-
-(defun brb-ledger-convive-data-read (convive)
-  "Read balance data from `brb-ledger-file' for given CONVIVE."
-  (let* ((prefix (concat "balance:" (vulpea-note-id convive)))
-         (cmd-bal (format "hledger -f '%s' balance '%s'" (brb-ledger-file--read) prefix))
-         (res-bal (split-string (shell-command-to-string cmd-bal) "\n" t " +"))
-         (total (string-to-number (-last-item res-bal)))
-
-         (cmd-register (format "hledger -f '%s' register -O csv -H '%s'"
-                               (brb-ledger-file--read) prefix))
-         (res-register (shell-command-to-string cmd-register))
-         (postings (seq-map
-                    (lambda (line)
-                      (let* ((parts (split-string-and-unquote line ","))
-                             (account (string-remove-prefix prefix (nth 4 parts)))
-                             (account (or (when (string-match org-link-bracket-re account)
-                                            (vulpea-db-get-by-id account))
-                                          account))
-                             (description (->> (nth 3 parts)
-                                               (s-chop-prefix "[")
-                                               (s-chop-suffix "]")))
-                             (description (or (when (string-match org-uuid-regexp description)
-                                                (vulpea-db-get-by-id description))
-                                              description)))
-                        (make-brb-ledger-posting
-                         :date (nth 1 parts)
-                         :description description
-                         :account account
-                         :amount (string-to-number (nth 5 parts))
-                         :total (string-to-number (nth 6 parts)))))
-                    (cdr (split-string res-register "\n" t)))))
-    (make-brb-ledger-convive-data
-     :total total
-     :postings postings)))
 
 (provide 'brb-ledger)
 ;;; brb-ledger.el ends here
