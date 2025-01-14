@@ -598,25 +598,6 @@ more robust."
          (s-chop-prefix "[")
          (s-chop-suffix "]"))))
 
-;; TODO: move to brb.el
-(cl-defun brb-ledger--format-amount (amount
-                                     &key
-                                     positive-face
-                                     zero-face
-                                     negative-face)
-  "Format balance represented as AMOUNT.
-
-Uses POSITIVE-FACE, ZERO-FACE and NEGATIVE-FACE for prettifying."
-  (let* ((value (brb-price-format amount))
-         (face (cond
-                ((> amount 0)
-                 (or positive-face 'success))
-                ((< amount 0)
-                 (or negative-face 'warning))
-                (t
-                 (or zero-face 'warning)))))
-    (propertize value 'face face)))
-
 ;; * Convive view
 ;;
 ;; Balance of specific convive
@@ -635,11 +616,7 @@ When POINT is non-nil, jump to it."
          (data (brb-ledger-convive-data-read convive)))
     (widget-buffer-setup (concat "*" (vulpea-note-title convive) " Ledger*")
       (widget-create 'title (concat (vulpea-note-title convive) " - Ledger"))
-      (widget-create
-       'balance-label
-       :format-value (lambda (_ value) (brb-ledger--format-amount value))
-       :tag "Balance:"
-       (brb-ledger-convive-data-total data))
+      (widget-create 'balance-label :value (brb-ledger-convive-data-total data) :tag "Balance:")
       (widget-insert "\n\n")
 
       (widget-create 'heading-1 "Records")
