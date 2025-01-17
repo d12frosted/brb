@@ -407,14 +407,9 @@ Basically a convenient shortcut for charge + spend."
 (defun brb-ledger-personal-data-read ()
   "Read personal balance data from `brb-ledger-file'."
   (let* ((prefix "personal:")
-
          (cmd-bal (format "hledger -f '%s' balance '%s'" (brb-ledger-file--read) prefix))
          (res-bal (split-string (shell-command-to-string cmd-bal) "\n" t " +"))
          (total (string-to-number (-last-item res-bal)))
-
-         (cmd-register (format "hledger -f '%s' register -O csv -H '%s'"
-                               (brb-ledger-file--read) prefix))
-         (res-register (shell-command-to-string cmd-register))
          (postings (brb-ledger-postings-read prefix)))
     (make-brb-ledger-personal-data
      :total total
@@ -426,10 +421,6 @@ Basically a convenient shortcut for charge + spend."
          (cmd-bal (format "hledger -f '%s' balance '%s'" (brb-ledger-file--read) prefix))
          (res-bal (split-string (shell-command-to-string cmd-bal) "\n" t " +"))
          (total (string-to-number (-last-item res-bal)))
-
-         (cmd-register (format "hledger -f '%s' register -O csv -H '%s'"
-                               (brb-ledger-file--read) prefix))
-         (res-register (shell-command-to-string cmd-register))
          (postings (brb-ledger-postings-read prefix)))
     (make-brb-ledger-convive-data
      :total total
