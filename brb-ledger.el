@@ -164,7 +164,7 @@ Transaction is recorded into `brb-ledger-file'."
      :account-from (concat "convive:" (vulpea-note-id convive))
      :amount amount)
     (when (get-buffer brb-ledger-buffer-name)
-      (brb-ledger-buffer-create))))
+      (brb-ledger-display))))
 
 ;;;###autoload
 (cl-defun brb-ledger-charge (&key convive amount date comment code)
@@ -195,7 +195,7 @@ CODE can be passed only in non-interactive usage. See
      :account-from (concat "balance:" (vulpea-note-id convive))
      :amount amount)
     (when (get-buffer brb-ledger-buffer-name)
-      (brb-ledger-buffer-create))))
+      (brb-ledger-display))))
 
 ;;; * Spending API
 
@@ -220,7 +220,7 @@ CODE can be passed only in non-interactive usage. See
      :account-from "balance:assets"
      :amount amount)
     (when (get-buffer brb-ledger-buffer-name)
-      (brb-ledger-buffer-create))))
+      (brb-ledger-display))))
 
 ;;;###autoload
 (cl-defun brb-ledger-spend-personal (&key amount date comment code)
@@ -243,7 +243,7 @@ CODE can be passed only in non-interactive usage. See
      :account-from "personal:account"
      :amount amount)
     (when (get-buffer brb-ledger-buffer-name)
-      (brb-ledger-buffer-create))))
+      (brb-ledger-display))))
 
 (cl-defun brb-ledger-buy-wine (&key wine price date code)
   "Buy a WINE from personal account.
@@ -349,7 +349,7 @@ Basically a convenient shortcut for charge + spend."
      :account-to "balance:assets"
      :account-from (concat "source:" (vulpea-note-id source))
      :amount amount)
-    (brb-ledger-buffer-create)))
+    (brb-ledger-display)))
 
 ;;; * Data reading
 ;;
