@@ -561,7 +561,7 @@ Basically a convenient shortcut for charge + spend."
           :value (vulpea-note-title (brb-ledger-posting-account posting))
           :notify (lambda (&rest _)
                     (funcall-interactively #'brb-ledger-convive-display-balance
-                                           (brb-ledger-posting-account it)))))
+                                           (brb-ledger-posting-account posting)))))
 
    ((vulpea-note-p (brb-ledger-posting-description posting))
     (list 'push-button
