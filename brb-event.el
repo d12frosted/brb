@@ -271,8 +271,15 @@ BALANCES is a hash table."
                                    (--map (assoc-default 'price-real it))
                                    (--filter it)
                                    (-sum)))
-         (credit-public (+ spending-wines-public spending-extra-public spending-shared))
-         (credit-real (+ spending-wines-real spending-extra-real spending-shared))
+         (spending-expense-wines (->> data
+                                      (assoc-default 'expense-wines)
+                                      (--map (ceiling
+                                              (* (assoc-default 'amount it)
+                                                 (assoc-default 'price it))))
+                                      (-sum)))
+
+         (credit-public (+ spending-wines-public spending-extra-public spending-shared spending-expense-wines))
+         (credit-real (+ spending-wines-real spending-extra-real spending-shared spending-expense-wines))
          (debit-base (->> participants
                           (--map (alist-get 'fee (brb-event-statement-for event it
                                                                           :data data
@@ -295,6 +302,7 @@ BALANCES is a hash table."
       (spending-wines-real . ,spending-wines-real)
       (spending-extra-public . ,spending-extra-public)
       (spending-extra-real . ,spending-extra-real)
+      (spending-expense-wines . ,spending-expense-wines)
       (credit-public . ,credit-public)
       (credit-real . ,credit-real)
       (debit-base . ,debit-base)
