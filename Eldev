@@ -11,3 +11,11 @@
 (setq sentence-end-double-space nil)
 
 (eldev-use-plugin 'autoloads)
+
+;; We are disabling the prefix check rule, as it enforces prefixing on widgets created
+;; with `define-widget'. This requirement seems wrong - even built-in widgets aren't prefixed.
+;;
+;; Additionally, there appears to be no way to distinguish between standard functions and widgets.
+(with-eval-after-load 'package-lint
+  (defun package-lint--check-defs-prefix (_prefix _definitions)
+    "Verify that symbol DEFINITIONS start with package PREFIX."))
