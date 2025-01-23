@@ -634,8 +634,7 @@ When POINT is non-nil, jump to it."
                                 '("deposit: " "deposit" "charge: " "charge")
                                 (brb-ledger-posting-description it)))
                 (balance-label :value ,(brb-ledger-posting-amount it))
-                (balance-label :value ,(brb-ledger-posting-total it)))
-              ))
+                (balance-label :value ,(brb-ledger-posting-total it)))))
         '((hline)))))
     (when point
       (goto-char point))))
