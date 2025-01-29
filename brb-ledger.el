@@ -570,7 +570,13 @@ Basically a convenient shortcut for charge + spend."
                     (funcall-interactively #'vulpea-visit (brb-ledger-posting-description posting)))))
 
    (t (list 'label
-            :value (s-chop-prefixes '("spend: " "charge: ") (brb-ledger-posting-description posting))))))
+            :value (s-chop-prefixes
+                    '("spend: "
+                      "charge: "
+                      "charge"
+                      "deposit: "
+                      "deposit")
+                    (brb-ledger-posting-description posting))))))
 
 ;;; ** Utils
 
@@ -630,9 +636,7 @@ When POINT is non-nil, jump to it."
              (--map
               `(row
                 (label :value ,(brb-ledger-posting-date it))
-                (label :value ,(s-chop-prefixes
-                                '("deposit: " "deposit" "charge: " "charge")
-                                (brb-ledger-posting-description it)))
+                ,(brb-ledger--posting-desc-widget it)
                 (balance-label :value ,(brb-ledger-posting-amount it))
                 (balance-label :value ,(brb-ledger-posting-total it)))))
         '((hline)))))
