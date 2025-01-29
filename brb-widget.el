@@ -54,5 +54,9 @@ It's the same as `balance-label' but with reversed colouring."
            ((< value 0) 'success)
            (t 'warning))))
 
+(define-widget 'note-label 'label
+  "A label for `vulpea-note'."
+  :format-value (lambda (_widget value) (vulpea-note-title value)))
+
 (provide 'brb-widget)
 ;;; brb-widget.el ends here
