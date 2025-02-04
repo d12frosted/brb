@@ -97,6 +97,27 @@ Returns nil if PRICE is of different currency than `brb-currency'.
         (concat "-" str)
       str)))
 
+(defun brb-price (wine)
+  "Return price of WINE entry.
+
+Result is an alist ((amount . float) (currency . string))."
+  (when-let* ((prices (->> (vulpea-note-meta-get-list wine "price")
+                           (--remove (s-prefix-p "XXX" it)))))
+    (when (> (seq-length prices) 1)
+      (user-error "%S has multiple prices, which is not supported"
+             (vulpea-note-title wine)))
+    (let ((pieces (s-split " " (nth 0 prices)))
+          (amount 0))
+      (unless (= (seq-length pieces) 2)
+        (user-error "%S has unsupported price: `%s'"
+                    (vulpea-note-title wine)
+                    (nth 0 prices)))
+      (setq amount (string-to-number (nth 0 pieces)))
+      (unless (> amount 0)
+        (error "%S has unsupported price amount: `%d'" (vulpea-note-title wine) amount))
+      `((amount . ,amount)
+        (currency . ,(nth 1 pieces))))))
+
 ;;; * QPR
 
 (defun brb-qpr (price score wine)
