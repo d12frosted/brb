@@ -39,6 +39,7 @@
 (defvar brb-sn-config '((name . "vivino")
                         (page-limit . 500)))
 
+;;;###autoload
 (defun brb-sn-display ()
   "Display UI for posting reviews on social network."
   (interactive)
