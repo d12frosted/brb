@@ -97,6 +97,20 @@ Returns nil if PRICE is of different currency than `brb-currency'.
         (concat "-" str)
       str)))
 
+(defun brb-to-price (string)
+  "Convert STRING to price object.
+
+Result is an alist ((amount . float) (currency . string))."
+  (let ((pieces (s-split " " string))
+        (amount 0))
+    (unless (= (seq-length pieces) 2)
+      (user-error "Not valid price string: `%s'" string))
+    (setq amount (string-to-number (nth 0 pieces)))
+    (unless (> amount 0)
+      (error "Only positive price is supported: `%d'" amount))
+    `((amount . ,amount)
+      (currency . ,(nth 1 pieces)))))
+
 (defun brb-price (wine)
   "Return price of WINE entry.
 
