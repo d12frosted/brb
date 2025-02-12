@@ -438,6 +438,7 @@ Basically a convenient shortcut for charge + spend."
                        (account (or (vulpea-db-get-by-id account)
                                     account))
                        (description (->> (nth 3 parts)
+                                         (s-chop-prefix "charge: ")
                                          (s-chop-prefix "[")
                                          (s-chop-suffix "]")))
                        (description (or (when (string-match org-uuid-regexp description)
