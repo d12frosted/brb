@@ -106,8 +106,8 @@ Result is an alist ((amount . float) (currency . string))."
     (unless (= (seq-length pieces) 2)
       (user-error "Not valid price string: `%s'" string))
     (setq amount (string-to-number (nth 0 pieces)))
-    (unless (> amount 0)
-      (error "Only positive price is supported: `%d'" amount))
+    (unless (>= amount 0)
+      (error "Negative price is not supported: `%d'" amount))
     `((amount . ,amount)
       (currency . ,(nth 1 pieces)))))
 
