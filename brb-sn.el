@@ -182,66 +182,91 @@
 
 (defun brb-sn--split-into-sentences (text)
   "Split TEXT into a list of sentences."
-  (let ((xs (reverse (s-split "\\. " text))))
+  (let ((xs (reverse (s-split "\\.[ \n]" text))))
     (reverse (cons (car xs) (--map (concat it ".") (cdr xs))))))
 
+(defun brb-sn--format-page (content page-num total-pages &optional header)
+  "Format a single page with page numbers and optional header.
+
+CONTENT is the text for the page.
+PAGE-NUM is the current page number.
+TOTAL-PAGES is the total number of pages.
+HEADER is an optional header for the first page."
+  (let ((page-header (format "[%d/%d]" page-num total-pages)))
+    (if (and header (= page-num 1))
+        (format "%s\n\n%s %s" header page-header content)
+      (format "%s %s" page-header content))))
+
+(defun brb-sn--get-page-length (content page-num &optional header)
+  "Calculate the length of a page with its formatting.
+
+CONTENT is the text for the page.
+PAGE-NUM is the current page number.
+HEADER is an optional header for the first page."
+  (let ((page-header-len (+ 4 ;; '[/] '
+                            (length (number-to-string page-num))
+                            (length (number-to-string page-num)))))
+    (+ page-header-len
+       (length content)
+       (if (and header (= page-num 1))
+           (+ (length header) 2)
+         0))))
+
+(defun brb-sn--build-page (sentences start-idx page-num total-pages limit &optional header)
+  "Build a single page from sentences.
+
+SENTENCES is the list of sentences.
+START-IDX is the starting index in the sentences list.
+PAGE-NUM is the current page number.
+TOTAL-PAGES is the total number of pages.
+LIMIT is the maximum length allowed for the page.
+HEADER is an optional header for the first page."
+  (let ((page-content "")
+        (sentences-used 0))
+    (-each-while (-drop start-idx sentences)
+        (lambda (sentence)
+          (let* ((test-content (if (string-empty-p page-content)
+                                   sentence
+                                 (concat page-content " " sentence)))
+                 (test-length (brb-sn--get-page-length test-content page-num header)))
+            (< test-length limit)))
+      (lambda (sentence)
+        (setq page-content (if (string-empty-p page-content)
+                               sentence
+                             (concat page-content " " sentence)))
+        (setq sentences-used (1+ sentences-used))))
+    (cons (brb-sn--format-page page-content page-num total-pages header)
+          sentences-used)))
+
 (defun brb-sn--paginate-text (header content limit)
-  "Paginate text with HEADER and CONTENT, respecting LIMIT characters per page.
-Returns a list of strings, where each string is a page."
-  (let* ((header-with-spacing (concat header "\n\n"))
-         (header-length (length header-with-spacing))
-         (effective-limit (- limit header-length))
-         (sentences (brb-sn--split-into-sentences content))
-         (pages '())
-         (current-page "")
-         (page-number 1))
+  "Paginate text with optional header and page numbers.
+HEADER appears only on the first page.
+CONTENT is split into pages of maximum length LIMIT.
+Returns a list of formatted pages."
+  (let* ((sentences (brb-sn--split-into-sentences content))
+         (total-pages 0)
+         (current-idx 0)
+         pages
+         page-result)
+    ;; First pass: count total pages
+    (let ((idx 0))
+      (while (< idx (length sentences))
+        (setq page-result
+              (brb-sn--build-page sentences idx
+                                 (1+ total-pages) 1 limit header))
+        (setq idx (+ idx (cdr page-result)))
+        (setq total-pages (1+ total-pages))))
 
-    ;; Check if content is short enough to fit in one page with header
-    (if (<= (+ header-length (length content)) limit)
-        (list (concat header-with-spacing content))
+    ;; Second pass: build actual pages
+    (while (< current-idx (length sentences))
+      (setq page-result
+            (brb-sn--build-page sentences current-idx
+                               (1+ (length pages)) total-pages
+                               limit header))
+      (push (car page-result) pages)
+      (setq current-idx (+ current-idx (cdr page-result))))
 
-      ;; Process sentences for pagination
-      (let ((total-pages
-             (ceiling (/ (float (length content))
-                         effective-limit))))
-
-        ;; First page (includes header)
-        (while (and sentences
-                    (< (+ (length current-page)
-                          (length (car sentences)))
-                       effective-limit))
-          (setq current-page
-                (concat current-page (if (string= current-page "") "" " ")
-                        (car sentences)))
-          (setq sentences (cdr sentences)))
-
-        (push (concat header-with-spacing
-                      (format "[1/%d] " total-pages)
-                      current-page)
-              pages)
-
-        ;; Remaining pages
-        (while sentences
-          (setq page-number (1+ page-number))
-          (setq current-page "")
-
-          ;; Build page content
-          (while (and sentences
-                      (< (+ (length current-page)
-                            (length (car sentences)))
-                         limit))
-            (setq current-page
-                  (concat current-page
-                          (if (string= current-page "") "" " ")
-                          (car sentences)))
-            (setq sentences (cdr sentences)))
-
-          ;; Add page with numbering
-          (push (concat (format "[%d/%d] " page-number total-pages)
-                        current-page)
-                pages))
-
-        (nreverse pages)))))
+    (nreverse pages)))
 
 (provide 'brb-sn)
 ;;; brb-sn.el ends here
