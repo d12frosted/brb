@@ -192,10 +192,12 @@ CONTENT is the text for the page.
 PAGE-NUM is the current page number.
 TOTAL-PAGES is the total number of pages.
 HEADER is an optional header for the first page."
-  (let ((page-header (format "[%d/%d]" page-num total-pages)))
+  (let ((page-header (if (> total-pages 1)
+                         (format "[%d/%d] " page-num total-pages)
+                       "")))
     (if (and header (= page-num 1))
-        (format "%s\n\n%s %s" header page-header content)
-      (format "%s %s" page-header content))))
+        (format "%s\n\n%s%s" header page-header content)
+      (format "%s%s" page-header content))))
 
 (defun brb-sn--get-page-length (content page-num &optional header)
   "Calculate the length of a page with its formatting.
