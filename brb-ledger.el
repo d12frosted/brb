@@ -367,6 +367,7 @@ Basically a convenient shortcut for charge + spend."
 
 (cl-defstruct brb-ledger-posting
   date
+  prefix
   description
   account
   amount
@@ -437,6 +438,7 @@ Basically a convenient shortcut for charge + spend."
                        (account (string-remove-prefix prefix (nth 4 parts)))
                        (account (or (vulpea-db-get-by-id account)
                                     account))
+                       (prefix (car (split-string (nth 3 parts) ":")))
                        (description (->> (nth 3 parts)
                                          (s-chop-prefix "charge: ")
                                          (s-chop-prefix "[")
@@ -446,6 +448,7 @@ Basically a convenient shortcut for charge + spend."
                                         description)))
                   (make-brb-ledger-posting
                    :date (nth 1 parts)
+                   :prefix prefix
                    :description description
                    :account account
                    :amount (string-to-number (nth 5 parts))
@@ -519,7 +522,9 @@ Basically a convenient shortcut for charge + spend."
         :row-end "")
        (->> (brb-ledger-data-postings data)
             (--remove (and (not (vulpea-note-p (brb-ledger-posting-description it)))
-                           (s-prefix-p "charge" (brb-ledger-posting-description it))))
+                           ;; (s-prefix-p "charge" (brb-ledger-posting-description it))
+                           (or (s-prefix-p "charge" (brb-ledger-posting-description it))
+                               (s-equals-p "charge" (or (brb-ledger-posting-prefix it) "")))))
             (seq-reverse)
             (-take 36)
             (--map
@@ -608,9 +613,9 @@ more robust."
 When POINT is non-nil, jump to it."
   (interactive)
   (let* ((convive (or convive (vulpea-select-from
-                              "People"
-                              (vulpea-db-query-by-tags-some '("people"))
-                              :require-match t)))
+                               "People"
+                               (vulpea-db-query-by-tags-some '("people"))
+                               :require-match t)))
          (data (brb-ledger-convive-data-read convive)))
     (widget-buffer-setup (concat "*" (vulpea-note-title convive) " Ledger*")
       (widget-create 'title (concat (vulpea-note-title convive) " - Ledger"))
