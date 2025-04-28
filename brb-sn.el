@@ -67,7 +67,8 @@
 
 (defun brb-sn--render-group (event ratings)
   "Render group of RATINGS by EVENT."
-  (let* ((heading (if event (concat "Ratings from " (vulpea-note-title event)) "Orphan ratings")))
+  (let* ((heading (if event (concat "Ratings from " (vulpea-note-title event)) "Orphan ratings"))
+         (event-data (when event (brb-event-data-read event))))
     (widget-create 'heading-1 heading)
     (when event
       (widget-insert "Date: " (brb-event-date-string event) "\n"))
@@ -80,13 +81,13 @@
                    (< (or (vulpea-note-meta-get it "order" 'number) 0)
                       (or (vulpea-note-meta-get other "order" 'number) 0))))
              ratings)
-      (brb-sn--render-rating event it))))
+      (brb-sn--render-rating event event-data it))))
 
-(defun brb-sn--render-rating (event rating)
-  "Render RATING from EVENT."
+(defun brb-sn--render-rating (event event-data rating)
+  "Render RATING from EVENT and its EVENT-DATA."
   (let* ((wine (vulpea-note-meta-get rating "wine" 'note))
          (score (format "☆ %.2f" (vulpea-note-meta-get rating "total" 'number)))
-         (header (brb-sn-rating-header event rating wine))
+         (header (brb-sn-rating-header event event-data rating wine))
          (content (brb-sn-rating-content event rating wine))
          (page-limit (alist-get 'page-limit brb-sn-config))
          (pages (if page-limit
@@ -131,17 +132,38 @@
     (widget-insert "\n")
     (widget-insert "\n")))
 
-(defun brb-sn-rating-header (event rating wine)
-  "Return header of WINE RATING from EVENT."
+(defun brb-sn-rating-header (event event-data rating wine)
+  "Return header of WINE RATING from EVENT and its EVENT-DATA."
   (let* ((date (vulpea-note-meta-get rating "date"))
-         (order (vulpea-note-meta-get rating "order" 'number))
+         (type-raw (->> event-data
+                        (alist-get 'wines)
+                        (--find (string-equal (vulpea-note-id wine)
+                                              (alist-get 'id it)))
+                        (alist-get 'type)))
+         (type-str (pcase type-raw
+                     (`"welcome" "Welcome drink")
+                     (`"extra" "Extra wine")
+                     (`"bonus" "Bonus wine")
+                     (_ "Wine")))
+         (order-raw (vulpea-note-meta-get rating "order" 'number))
+         (order-typed (when type-raw
+                        (->> (vulpea-note-meta-get-list event "wines" 'link)
+                             (--filter (string-equal type-raw
+                                                     (->> event-data
+                                                          (alist-get 'wines)
+                                                          (-find (lambda (other)
+                                                                   (string-equal it (alist-get 'id other))))
+                                                          (alist-get 'type))))
+                             (-find-index (lambda (other) (string-equal (vulpea-note-id wine) other)))
+                             (+ 1))))
+         (order (or order-typed order-raw))
          (volume (vulpea-note-meta-get wine "volume" 'number))
          (base (vulpea-note-meta-get wine "base" 'number))
          (degorgee (vulpea-note-meta-get wine "degorgee"))
          (sur-lie (vulpea-note-meta-get wine "sur lie"))
          (lines (list
                  date
-                 (when event (format "Wine #%d on %s" order (vulpea-note-title event)))
+                 (when event (format "%s #%d on %s" type-str order (vulpea-note-title event)))
                  (pcase volume
                    (`1500 "Magnum bottle")
                    (`1000 "Double bottle")
@@ -255,7 +277,7 @@ Returns a list of formatted pages."
       (while (< idx (length sentences))
         (setq page-result
               (brb-sn--build-page sentences idx
-                                 (1+ total-pages) 1 limit header))
+                                  (1+ total-pages) 1 limit header))
         (setq idx (+ idx (cdr page-result)))
         (setq total-pages (1+ total-pages))))
 
@@ -263,8 +285,8 @@ Returns a list of formatted pages."
     (while (< current-idx (length sentences))
       (setq page-result
             (brb-sn--build-page sentences current-idx
-                               (1+ (length pages)) total-pages
-                               limit header))
+                                (1+ (length pages)) total-pages
+                                limit header))
       (push (car page-result) pages)
       (setq current-idx (+ current-idx (cdr page-result))))
 
