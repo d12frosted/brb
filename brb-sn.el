@@ -168,6 +168,7 @@
                    (`1500 "Magnum bottle")
                    (`1000 "Double bottle")
                    (`750 nil)
+                   (`620 "Clavelin bottle")
                    (`500 nil)
                    (`375 "Half bottle")
                    (_ (user-error "Unsupported volume %d" volume)))
