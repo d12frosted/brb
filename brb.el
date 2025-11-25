@@ -119,7 +119,7 @@ Result is an alist ((amount . float) (currency . string))."
                            (--remove (s-prefix-p "XXX" it)))))
     (when (> (seq-length prices) 1)
       (user-error "%S has multiple prices, which is not supported"
-             (vulpea-note-title wine)))
+                  (vulpea-note-title wine)))
     (let ((pieces (s-split " " (nth 0 prices)))
           (amount 0))
       (unless (= (seq-length pieces) 2)
