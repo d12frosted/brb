@@ -22,6 +22,14 @@
 
 ;;; Commentary:
 ;;
+;; Utilities for publishing wine reviews to social networks.
+;;
+;; Main entry point is `brb-sn-display' which shows pending reviews
+;; grouped by event, with copy buttons for easy posting.
+;;
+;; Configuration via `brb-sn-config':
+;;   - name: network name (stored in rating metadata to track posted reviews)
+;;   - page-limit: character limit per post (for pagination)
 
 ;;; Code:
 
@@ -34,14 +42,21 @@
 (require 'widget-extra)
 
 (defvar brb-sn-buffer-name "*Reviews for Social Networks*"
-  "Name of SN buffer.")
+  "Name of buffer for displaying pending reviews.")
 
 (defvar brb-sn-config '((name . "vivino")
-                        (page-limit . 500)))
+                        (page-limit . 500))
+  "Configuration for social network publishing.
+
+An alist with keys:
+- name: identifier for the network (e.g., \"vivino\")
+- page-limit: maximum characters per post for pagination")
 
 ;;;###autoload
 (defun brb-sn-display ()
-  "Display UI for posting reviews on social network."
+  "Display pending wine reviews for social network posting.
+
+Shows all ratings not yet marked as posted, grouped by event."
   (interactive)
   (let* ((network (alist-get 'name brb-sn-config))
          (ratings (->> (vulpea-db-query-by-tags-every '("wine" "rating"))

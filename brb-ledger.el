@@ -1,4 +1,4 @@
-;;; brb-ledger.el --- description -*- lexical-binding: t; -*-
+;;; brb-ledger.el --- Balance tracking with hledger -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2024  Boris Buliga
 
@@ -22,34 +22,26 @@
 
 ;;; Commentary:
 ;;
-;; NB! These functions are tied to specific use case. Feel free to
-;; copy them, and modify as you wish. But don't expect stability or
-;; new features.
+;; Balance tracking for Barberry Garden using hledger.
 ;;
-;; Requires hledger command line tool.
+;; Requires the hledger command-line tool to be installed.
 ;;
-;; A set of helpers to maintain Barberry Garden ledger. There are the
-;; following interactive functions of interest:
+;; Key interactive functions:
 ;;
-;; - `brb-ledger-display' - display ledger. Includes total balance,
-;;   balance for each participant and list of transactions. Many other
-;;   interactive functions work in a DWIM fashion when used in this
-;;   buffer.
+;; - `brb-ledger-display' - show ledger with balances and transactions
+;; - `brb-ledger-deposit' - record a deposit from a participant
+;; - `brb-ledger-charge' - charge an amount to a participant
+;; - `brb-ledger-spend' - record spending from shared balance
+;; - `brb-ledger-spend-personal' - record spending from personal account
+;; - `brb-ledger-convive-display-balance' - view a participant's history
 ;;
-;; - `brb-ledger-spend' - spend some amount. Modifies total balance.
+;; Configuration:
 ;;
-;; - `brb-ledger-spend-personal' - spend some amount from personal
-;;   account. Modified total balance.
+;;   (setq brb-ledger-file "/path/to/ledger.journal")
 ;;
-;; - `brb-ledger-charge' - charge a person for some amount. Modifies
-;;   balance of specific participant (subtract). Useful to track who
-;;   paid what.
+;; The file can also be a list of two paths: (read-path write-path).
 ;;
-;; - `brb-ledger-deposit' - deposit some amount for a person. Modifies
-;;   balance of specific participant AND total balance.
-;;
-;; P.S. Person, participant and convive are used as synonyms in this
-;; file.
+;; Note: "convive" is used as a synonym for participant throughout.
 
 ;;; Code:
 

@@ -1,4 +1,4 @@
-;;; brb-widget.el --- extra widgets for brb UIs -*- lexical-binding: t; -*-
+;;; brb-widget.el --- Custom widgets for brb UIs -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2024  Boris Buliga
 
@@ -22,7 +22,13 @@
 
 ;;; Commentary:
 ;;
-;; Multiple widgets used by various parts of brb UI.
+;; Custom Emacs widgets for brb user interfaces.
+;;
+;; Provides specialized label widgets for displaying:
+;; - `money-label' - monetary values formatted with `brb-currency'
+;; - `balance-label' - balances with positive/negative coloring
+;; - `balance-reversed-label' - balances with inverted coloring (for debts)
+;; - `note-label' - vulpea note titles
 
 ;;; Code:
 
@@ -34,10 +40,9 @@
   :format-value (lambda (_widget value) (brb-price-format value)))
 
 (define-widget 'balance-label 'money-label
-  "A label for balance.
+  "A label for balance with positive/negative coloring.
 
-It's the same as `money-label' with colouring for positive and negative
-colouring."
+Positive values are shown as success, negative as warning."
   :face (lambda (_widget value)
           (cond
            ((> value 0) 'success)
@@ -45,9 +50,9 @@ colouring."
            (t 'success))))
 
 (define-widget 'balance-reversed-label 'money-label
-  "A label for reversed balance.
+  "A label for balance with inverted coloring.
 
-It's the same as `balance-label' but with reversed colouring."
+Positive values are shown as warning (debt owed), negative as success."
   :face (lambda (_widget value)
           (cond
            ((> value 0) 'warning)

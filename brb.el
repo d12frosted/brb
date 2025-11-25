@@ -26,10 +26,14 @@
 
 ;;; Commentary:
 ;;
-;; Barberry Garden utilities and helpers.
+;; Core utilities for Barberry Garden - a personal wine tasting event
+;; management system.
 ;;
-;; This module contains only common things used in other modules.
-;; Refer to them for more information.
+;; This module provides:
+;; - Price formatting and parsing (`brb-price-format', `brb-price')
+;; - QPR (Quality-Price Ratio) calculation (`brb-qpr')
+;; - String table formatting (`brb-string-table')
+;; - Utility functions used by other brb modules
 ;;
 
 ;;; Code:
@@ -135,13 +139,14 @@ Result is an alist ((amount . float) (currency . string))."
 ;;; * QPR
 
 (defun brb-qpr (price score wine)
-  "Calculate QPR.
+  "Calculate Quality-Price Ratio for WINE.
 
-SCORE is a rational number in [0, 5].
+SCORE is a rating in range [0, 5].
 PRICE is a positive number in `brb-currency'.
-WINE is a note representing wine.
+WINE is a `vulpea-note' representing the wine entry.
 
-QPR is adjusted to account for VOLUME."
+The calculation normalizes price to 750ml bottle equivalent and applies
+a higher multiplier (2500 vs 1600) for traditional method sparkling wines."
   (when (and score price (> price 0) (> score 0))
     (let* ((volume (or (vulpea-note-meta-get wine "volume" 'number) 750))
            (multiplier (if (string-equal (vulpea-note-meta-get wine "carbonation method") "traditional")
@@ -161,11 +166,7 @@ QPR is adjusted to account for VOLUME."
           p))
         100)))))
 
-;;; * Compatibility / code migration
-;;
-;; The following code exists simply to ease the migration from private
-;; configurations to public repository.
-;;
+;;; * String table formatting
 
 (cl-defun brb-string-table (&key
                             data
@@ -321,8 +322,12 @@ WIDTHS. Each value is separated by SEP."
     sep)
    row-end))
 
+;;; * Utility functions
+
 (defun brb-string-from (value)
-  "Convert VALUE to string."
+  "Convert VALUE to string for display purposes.
+
+Supported types: string, number, symbol, `vulpea-note'."
   (cond
    ((stringp value) value)
    ((numberp value) (number-to-string value))
@@ -341,12 +346,14 @@ parameter), defaulting to `vulpea-note-title'."
              #'vulpea-visit
              (vulpea-note-id note)))
 
+;;; * Calc helpers
+
 (defun calc-from-number (number)
-  "Convert NUMBER to Calc format."
+  "Convert NUMBER to Emacs Calc internal format."
   (math-read-number (number-to-string number)))
 
 (defun calc-to-number (number)
-  "Convert NUMBER from Calc format."
+  "Convert NUMBER from Emacs Calc internal format to Elisp number."
   (read (math-format-number number)))
 
 (provide 'brb)

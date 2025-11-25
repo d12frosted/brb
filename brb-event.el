@@ -1,4 +1,4 @@
-;;; brb.el --- Barberry Garden utilities and helpers  -*- lexical-binding: t; -*-
+;;; brb-event.el --- Wine tasting event management -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2024  Boris Buliga
 
@@ -22,11 +22,17 @@
 
 ;;; Commentary:
 ;;
-;; In addition to its focus on wines, events are a core component of
-;; Barberry Garden. This module provides various functions to query,
-;; create, and manage events. Most importantly, it offers the ability
-;; to retrieve detailed event information, including statistics and
-;; reports.
+;; Event management for Barberry Garden wine tastings.
+;;
+;; This module provides functions to:
+;; - Query and select events (`brb-event-select', `brb-events-from-range')
+;; - Create new events (`brb-event-create')
+;; - Access event metadata (wines, participants, dates)
+;; - Calculate event statements and summaries with scoring statistics
+;;
+;; Events are org-mode notes (via vulpea) tagged with `brb-event-tags'.
+;; Each event can have associated data stored in a companion .data.el file
+;; for complex structures that don't fit in org metadata.
 ;;
 
 ;;; Code:
@@ -85,7 +91,7 @@ If visiting an event buffer, uses this event as initial prompt."
 ;;; * Metadata
 
 (defun brb-event-date-string (event)
-  "Return date of EVENT as string using %F format."
+  "Return date of EVENT as ISO date string (YYYY-MM-DD)."
   (vulpea-utils-with-note event
     (when-let ((str (vulpea-buffer-prop-get "date")))
       (org-read-date nil nil str))))
@@ -94,12 +100,10 @@ If visiting an event buffer, uses this event as initial prompt."
 
 ;;;###autoload
 (defun brb-event-create ()
-  "Create a new event.
+  "Create a new wine tasting event interactively.
 
-This is very opinionated and serves only purposes of Barberry Garden
-site. Feel free to redefine this function if needed.
-
-But let's be honest. Who in the world is going to use this package?"
+Prompts for event name, URL slug, and date, then creates a vulpea note
+with predefined structure for event management."
   (interactive)
   (let* ((name (read-string "Name: "))
          (slug (read-string "Slug: "))
@@ -342,12 +346,14 @@ BALANCES is a hash table."
       (due . ,due))))
 
 (cl-defun brb-event-statement-for (event participant &key data host wines balances)
-  "Empty statement for PARTICIPANT of EVENT.
+  "Prepare financial statement for PARTICIPANT of EVENT.
 
-DATA is loaded unless provided.
-HOST is a `vulpea-note'. Loaded unless provided.
-WINES is a list of `vulpea-note'. Loaded unless provided.
-BALANCES is a hash table."
+Returns an alist with fee, orders, extra wines, and balance calculations.
+
+DATA is event data, loaded unless provided.
+HOST is a `vulpea-note', loaded unless provided.
+WINES is a list of `vulpea-note', loaded unless provided.
+BALANCES is a hash table mapping participant IDs to their balance."
   (let* ((data (or data (brb-event-data-read event)))
          (use-balance (pcase (or (vulpea-note-meta-get event "use balance") "true")
                         ("true" t)
