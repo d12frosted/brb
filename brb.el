@@ -144,11 +144,7 @@ WINE is a note representing wine.
 QPR is adjusted to account for VOLUME."
   (when (and score price (> price 0) (> score 0))
     (let* ((volume (or (vulpea-note-meta-get wine "volume" 'number) 750))
-           (appellation (vulpea-note-meta-get wine "appellation"))
-           (multiplier (if (and appellation
-                                (seq-contains-p
-                                 '("Champagne AOC")
-                                 (nth 3 (s-match org-link-any-re appellation))))
+           (multiplier (if (string-equal (vulpea-note-meta-get wine "carbonation method") "traditional")
                            2500
                          1600))
            (price (* price (/ 750.0 volume)))
