@@ -70,6 +70,9 @@ and the second one for writing.")
 (defvar brb-ledger-buffer-name "*Barberry Garden Balance*"
   "Name of balance buffer.")
 
+(defvar brb-ledger-display-limit 36
+  "Maximum number of transactions to display in ledger views.")
+
 ;;; * File resolution
 
 (defun brb-ledger-file--read (&optional path)
@@ -526,7 +529,7 @@ Basically a convenient shortcut for charge + spend."
                            (or (s-prefix-p "charge" (brb-ledger-posting-description it))
                                (s-equals-p "charge" (or (brb-ledger-posting-prefix it) "")))))
             (seq-reverse)
-            (-take 36)
+            (-take brb-ledger-display-limit)
             (--map
              (list
               'row
@@ -549,7 +552,7 @@ Basically a convenient shortcut for charge + spend."
         :row-end "")
        (->> (brb-ledger-personal-data-postings data-personal)
             (seq-reverse)
-            (-take 36)
+            (-take brb-ledger-display-limit)
             (--map
              (list
               'row
