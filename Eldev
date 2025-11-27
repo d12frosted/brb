@@ -4,8 +4,25 @@
 
 (eldev-use-package-archive 'gnu)
 (eldev-use-package-archive 'melpa-unstable)
-(eldev-use-vc-repository 'vino :github "d12frosted/vino")
-(eldev-use-vc-repository 'widget-extra :github "d12frosted/widget-extra")
+
+;; Use local dependencies when available, otherwise fetch from GitHub.
+;; Local paths can be set via environment variables or detected automatically.
+(defun brb-eldev-use-local-or-vc (name env-var default-path github-repo)
+  "Use local dependency NAME if available, otherwise fetch from GitHub.
+ENV-VAR is the environment variable to check for path override.
+DEFAULT-PATH is the default local path relative to HOME.
+GITHUB-REPO is the GitHub repo in \"user/repo\" format."
+  (let* ((env-path (getenv env-var))
+         (default-full-path (expand-file-name default-path (getenv "HOME")))
+         (local-path (or env-path
+                         (and (file-exists-p default-full-path) default-full-path))))
+    (if local-path
+        (eldev-use-local-dependency local-path)
+      (eldev-use-vc-repository name :github github-repo))))
+
+(brb-eldev-use-local-or-vc 'vulpea "VULPEA_PATH" "Developer/vulpea" "d12frosted/vulpea")
+(brb-eldev-use-local-or-vc 'vino "VINO_PATH" "Developer/vino" "d12frosted/vino")
+(brb-eldev-use-local-or-vc 'widget-extra "WIDGET_EXTRA_PATH" "Developer/widget-extra" "d12frosted/widget-extra")
 
 ;; Tell checkdoc not to demand two spaces after a period.
 (setq sentence-end-double-space nil)
