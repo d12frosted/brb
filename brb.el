@@ -6,7 +6,7 @@
 ;; Maintainer: Boris Buliga <boris@d12frosted.io>
 ;; URL: https://github.com/d12frosted/brb
 ;; Version: 1.0.0
-;; Package-Requires: ((emacs "29.3") (dash "2.19.1") (s "1.13.0") (vulpea "0.3.0") (vino "0.4.0") (widget-extra "1.0.0"))
+;; Package-Requires: ((emacs "29.3") (dash "2.19.1") (s "1.13.0") (vulpea "0.3.0") (vino "0.4.0") (widget-extra "1.0.0") (vui "0.0.0"))
 ;; Keywords: extensions
 
 ;; This file is not part of GNU Emacs.
