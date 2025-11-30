@@ -1,9 +1,10 @@
 ;;; brb-ledger.el --- Balance tracking with hledger -*- lexical-binding: t; -*-
 
-;; Copyright (C) 2024  Boris Buliga
+;; Copyright (C) 2024-2025  Boris Buliga
 
 ;; Author: Boris Buliga <boris@d12frosted.io>
 ;; Maintainer: Boris Buliga <boris@d12frosted.io>
+;; URL: https://github.com/d12frosted/brb
 
 ;; This file is not part of GNU Emacs.
 

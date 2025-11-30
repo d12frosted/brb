@@ -4,6 +4,7 @@
 
 ;; Author: Boris Buliga <boris@d12frosted.io>
 ;; Maintainer: Boris Buliga <boris@d12frosted.io>
+;; URL: https://github.com/d12frosted/brb
 
 ;; This file is not part of GNU Emacs.
 
