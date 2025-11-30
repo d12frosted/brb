@@ -1,6 +1,6 @@
-;;; brb-event-plan.el --- Event planning UI -*- lexical-binding: t; -*-
+;;; brb-event-plan.el --- Event planning UI with vui.el -*- lexical-binding: t; -*-
 
-;; Copyright (C) 2025  Boris Buliga
+;; Copyright (C) 2024-2025  Boris Buliga
 
 ;; Author: Boris Buliga <boris@d12frosted.io>
 ;; Maintainer: Boris Buliga <boris@d12frosted.io>
@@ -22,7 +22,8 @@
 
 ;;; Commentary:
 ;;
-;; Widget-based UI for planning and managing wine tasting events.
+;; Declarative UI for planning and managing wine tasting events.
+;; Built with vui.el - a React-like component library for Emacs.
 ;;
 ;; Main entry point is `brb-event-plan' which opens an interactive buffer
 ;; for the selected event with tabs for different aspects:
@@ -33,928 +34,888 @@
 ;; - invoices: invoice generation and ledger integration
 ;;
 ;; Architecture:
-;; - Central state in `brb-plan-state' struct
-;; - Zone-based rendering for efficient partial updates
-;; - State changes trigger redraw of affected zones only
-;;
-;; Known Issues (widget.el limitations):
-;;
-;; 1. Cursor jumps on edit in Order tab - when editing quantity, the
-;;    entire orders-personal zone redraws and cursor position is lost.
-;;    Line+column restoration helps but isn't perfect. This is fundamental
-;;    to widget.el - no concept of widget identity across redraws.
-;;
-;; 2. No fine-grained updates - can't update single table cell, must
-;;    redraw entire zone. Zone granularity is coarse (e.g., all
-;;    participants' orders in one zone).
-;;
-;; 3. Lambda capture in loops - must use backquoted lambdas with `,var`
-;;    to properly capture loop variables in widget callbacks.
-;;
-;; 4. Nested anaphoric macros - dash.el's `--map`, `--filter`, `--each`
-;;    all use `it`, causing shadowing bugs when nested.
-;;
-;; 5. Compound widgets need special handling - menu-choice in tables
-;;    requires `widget-convert` and manual `:value-get`.
+;; - Context-based state management (React-like)
+;; - Declarative components with props and state
+;; - Automatic re-rendering on state changes
 ;;
 
 ;;; Code:
 
 (require 'cl-lib)
 (require 'dash)
-
 (require 'vulpea)
-(require 'vino)
-
-(require 'widget)
-(require 'wid-edit)
-(require 'widget-extra)
-
+(require 'vui)
 (require 'brb)
 (require 'brb-event)
 (require 'brb-ledger)
 
-;;; * State management
 
-(cl-defstruct (brb-plan-state (:constructor brb-plan-state--create))
-  "State for event planning UI."
-  buffer        ; display buffer
-  event         ; vulpea-note for the event
-  data          ; event data (from .data.el file)
-  tab           ; current tab string
-  host          ; vulpea-note for host
-  participants  ; list of vulpea-note
-  waiting       ; waiting list (vulpea-notes)
-  wines         ; list of vulpea-note
-  balances)     ; hash-table pid->balance
+;;; Contexts
 
-(defvar-local brb-plan--state nil
-  "Buffer-local state for event planning UI.")
+;; Event context - the vulpea-note for the event
+(defcontext brb-plan-event nil
+  "The event vulpea-note being planned.")
 
-(defun brb-plan-state-create (event)
-  "Create a new state for EVENT."
-  (let ((data (brb-event-data-read event)))
-    (brb-plan-state--create
-     :event event
-     :data data
-     :tab "plan"
-     :host (vulpea-note-meta-get event "host" 'note)
-     :participants (brb-event-participants event)
-     :waiting (vulpea-note-meta-get-list event "waiting" 'note)
-     :wines (brb-event-wines event)
-     :balances (make-hash-table :test 'equal))))
+;; Data context - event data from .data.el file
+(defcontext brb-plan-data nil
+  "Event data alist from .data.el file.")
 
-(defun brb-plan--save-data (state)
-  "Save data from STATE to file."
-  (brb-event-data-write
-   (brb-plan-state-event state)
-   (brb-plan-state-data state)))
+;; Host context - the host vulpea-note
+(defcontext brb-plan-host nil
+  "The event host vulpea-note.")
 
-(defun brb-plan--set-event-meta (state key value)
-  "Set event metadata KEY to VALUE in STATE.
-Updates the org file and refreshes the in-memory event struct."
-  (let* ((event (brb-plan-state-event state))
-         (meta (vulpea-note-meta event)))
-    ;; Update org file
-    (vulpea-utils-with-note event
-      (vulpea-buffer-meta-set key value 'append)
-      (save-buffer))
-    ;; Update in-memory struct's meta
-    (setf (vulpea-note-meta event)
-          (cons (list key (format "%s" value))
-                (--remove (string-equal key (car it)) meta)))))
+;; Participants context - list of participant vulpea-notes
+(defcontext brb-plan-participants nil
+  "List of participant vulpea-notes.")
 
-;;; * Zone infrastructure
+;; Waiting list context
+(defcontext brb-plan-waiting nil
+  "List of vulpea-notes on the waiting list.")
 
-(defvar brb-plan--zone-deps
-  '((planned-participants . (forecast finances))
-    (price . (forecast finances participants))
-    (host . (general))
-    (wines . (wines finances scores-wines scores-personal))
-    (participants . (participants finances scores-personal))
-    (waiting . (waiting))
-    (shared . (shared finances))
-    (personal . (orders-summary orders-personal finances))
-    (extra . (extra-wines finances))
-    (scores . (scores-summary scores-wines scores-personal finances)))
-  "Mapping from data keys to zones that depend on them.")
+;; Wines context - list of wine vulpea-notes
+(defcontext brb-plan-wines nil
+  "List of wine vulpea-notes for the event.")
 
-(defun brb-plan--zone-start (name)
-  "Insert zone start marker for zone NAME."
-  (insert (propertize "\u200B" 'brb-zone-start name 'invisible t)))
+;; Balances context - hash-table of participant-id -> balance
+(defcontext brb-plan-balances nil
+  "Hash-table mapping participant ID to their balance.")
 
-(defun brb-plan--zone-end (name)
-  "Insert zone end marker for zone NAME."
-  (insert (propertize "\u200B" 'brb-zone-end name 'invisible t)))
+;; Actions context - plist of action functions for state updates
+(defcontext brb-plan-actions nil
+  "Plist of action functions for updating state and persisting changes.")
 
-(defun brb-plan--find-zone (name)
-  "Find zone NAME in current buffer.
+;;; Helper functions
 
-Returns (START . END) or nil if not found."
-  (save-excursion
-    (goto-char (point-min))
-    (let ((start nil)
-          (end nil))
-      ;; Find start
-      (while (and (not start) (< (point) (point-max)))
-        (when (eq name (get-text-property (point) 'brb-zone-start))
-          (setq start (point)))
-        (forward-char 1))
-      ;; Find end
-      (when start
-        (while (and (not end) (< (point) (point-max)))
-          (when (eq name (get-text-property (point) 'brb-zone-end))
-            (setq end (1+ (point))))
-          (forward-char 1)))
-      (when (and start end)
-        (cons start end)))))
+(defun brb-plan--wine-data (data wine-id)
+  "Get wine data for WINE-ID from DATA."
+  (--find (string-equal wine-id (alist-get 'id it))
+          (alist-get 'wines data)))
 
-(defun brb-plan--redraw-zone (state zone &optional skip-cursor-restore)
-  "Redraw ZONE in buffer for STATE.
-If SKIP-CURSOR-RESTORE is non-nil, don't restore cursor position.
-Returns (ZONE . DELTA) if point was in this zone, nil otherwise."
-  (when-let ((bounds (brb-plan--find-zone zone)))
-    (let* ((inhibit-read-only t)
-           (zone-start (car bounds))
-           (zone-end (cdr bounds))
-           (point-in-zone (and (>= (point) zone-start)
-                               (<= (point) zone-end)))
-           ;; Save relative position within zone
-           (delta (when point-in-zone (- (point) zone-start))))
-      (save-excursion
-        (delete-region zone-start zone-end)
-        (goto-char zone-start)
-        (brb-plan--render-zone state zone))
-      ;; Restore cursor position within zone (unless skipped)
-      (when (and point-in-zone (not skip-cursor-restore))
-        (let ((new-bounds (brb-plan--find-zone zone)))
-          (when new-bounds
-            (goto-char (min (+ (car new-bounds) delta)
-                            (cdr new-bounds))))))
-      (widget-setup)
-      ;; Return info for caller to handle cursor restoration
-      (when point-in-zone
-        (cons zone delta)))))
+(defun brb-plan--participant-data (data pid)
+  "Get participant data for PID from DATA."
+  (--find (string-equal pid (alist-get 'id it))
+          (alist-get 'participants data)))
 
-(defun brb-plan--redraw-zones (state zones)
-  "Redraw multiple ZONES in buffer for STATE."
-  (let ((cursor-info nil))
-    ;; First pass: redraw all zones, find which one had cursor
-    (dolist (zone zones)
-      (when-let ((info (brb-plan--redraw-zone state zone t)))
-        (setq cursor-info info)))
-    ;; Restore cursor in the zone that had it
-    (when cursor-info
-      (let* ((zone (car cursor-info))
-             (delta (cdr cursor-info))
-             (new-bounds (brb-plan--find-zone zone)))
-        (when new-bounds
-          (goto-char (min (+ (car new-bounds) delta)
-                          (cdr new-bounds))))))))
+(defun brb-plan--glass-price (wine-data)
+  "Calculate glass price for extra wine from WINE-DATA."
+  (let ((asking (or (alist-get 'price-asking wine-data)
+                    (alist-get 'price-public wine-data)
+                    0))
+        (participants (alist-get 'participants wine-data)))
+    (if (and participants (> (length participants) 0))
+        (ceiling (/ (float asking) (length participants)))
+      0)))
 
-(defun brb-plan--update (state key value)
-  "Update KEY to VALUE in STATE data, redraw affected zones."
-  (setf (alist-get key (brb-plan-state-data state)) value)
-  (brb-plan--save-data state)
-  (brb-plan--redraw-zones state (alist-get key brb-plan--zone-deps)))
 
-;;; * Zone renderers
+;;; Root Component
 
-(defun brb-plan--render-zone (state zone)
-  "Render ZONE for STATE at point."
-  (brb-plan--zone-start zone)
-  (pcase zone
-    ('header (brb-plan--render-header state))
-    ('general (brb-plan--render-general state))
-    ('forecast (brb-plan--render-forecast state))
-    ('finances (brb-plan--render-finances state))
-    ('wines (brb-plan--render-wines state))
-    ('shared (brb-plan--render-shared state))
-    ('expense (brb-plan--render-expense state))
-    ('participants (brb-plan--render-participants state))
-    ('waiting (brb-plan--render-waiting state))
-    ('scores-summary (brb-plan--render-scores-summary state))
-    ('scores-wines (brb-plan--render-scores-wines state))
-    ('scores-personal (brb-plan--render-scores-personal state))
-    ('orders-summary (brb-plan--render-orders-summary state))
-    ('orders-personal (brb-plan--render-orders-personal state))
-    ('extra-wines (brb-plan--render-extra-wines state))
-    ('invoices-actions (brb-plan--render-invoices-actions state))
-    ('invoices-settings (brb-plan--render-invoices-settings state))
-    ('invoices-personal (brb-plan--render-invoices-personal state))
-    (_ (widget-insert (format "[Zone %s not implemented]\n" zone))))
-  (brb-plan--zone-end zone))
+(defcomponent brb-event-plan-app (event)
+  :state ((event event)
+          (tab "plan")
+          (data nil)
+          (host nil)
+          (participants nil)
+          (waiting nil)
+          (wines nil)
+          (balances nil))
 
-(defun brb-plan--render-header (state)
-  "Render header zone for STATE."
-  (let ((event (brb-plan-state-event state))
-        (tab (brb-plan-state-tab state)))
-    (widget-create 'title (vulpea-note-title event))
-    (widget-create 'horizontal-choice
-                   :value tab
-                   :values '("plan" "scores" "order" "extra" "invoices")
-                   :notify (lambda (widget &rest _)
-                             (setf (brb-plan-state-tab state)
-                                   (widget-value widget))
-                             (brb-plan--display state)))
-    (widget-insert "\n")
-    (widget-create 'action-button
-                   :value "Open note"
-                   :notify (lambda (&rest _)
-                             (vulpea-visit (brb-plan-state-event state))))
-    (widget-insert " | ")
-    (widget-create 'action-button
-                   :value "Refresh"
-                   :notify (lambda (&rest _)
-                             (brb-plan--reload state)))
-    (widget-insert "\n\n")))
+  :on-mount
+  ;; Initialize state from event
+  (let* ((event-data (brb-event-data-read event))
+         (event-host (vulpea-note-meta-get event "host" 'note))
+         (event-participants (brb-event-participants event))
+         (event-waiting (vulpea-note-meta-get-list event "waiting" 'note))
+         (event-wines (brb-event-wines event))
+         (event-date (brb-event-date-string event))
+         (event-balances (let ((tbl (make-hash-table :test 'equal)))
+                           (--each event-participants
+                             (puthash (vulpea-note-id it)
+                                      (brb-ledger-balance-of (vulpea-note-id it) event-date)
+                                      tbl))
+                           tbl)))
+    (vui-batch
+     (vui-set-state :data event-data)
+     (vui-set-state :host event-host)
+     (vui-set-state :participants event-participants)
+     (vui-set-state :waiting event-waiting)
+     (vui-set-state :wines event-wines)
+     (vui-set-state :balances event-balances)))
 
-(defun brb-plan--render-general (state)
-  "Render general settings zone for STATE."
-  (let ((event (brb-plan-state-event state)))
-    (widget-create 'heading-2 "General")
-    (widget-create
-     'fields-group
-     (list
-      'person-field
-      :tag "Host:"
-      :value (brb-plan-state-host state)
-      :notify (lambda (widget &rest _)
-                (let ((host (widget-value widget)))
-                  (setf (brb-plan-state-host state) host)
-                  (vulpea-utils-with-note (brb-plan-state-event state)
-                    (vulpea-buffer-meta-set "host" host 'append)
-                    (save-buffer)))))
-     (list
-      'bounded-int-field
-      :tag "Price:"
-      :min-value 0
-      :value (or (vulpea-note-meta-get event "price" 'number) 0)
-      :format-value (lambda (_widget val) (brb-price-format val))
-      :notify (lambda (widget &rest _)
-                (brb-plan--set-event-meta state "price" (widget-value widget))
-                (brb-plan--redraw-zones state '(forecast finances participants)))))
-    (widget-insert "\n")))
+  :render
+  (let* (;; Create action functions that update state and persist
+         (actions
+          (list
+           ;; Update data and save to file
+           :update-data
+           (lambda (key value)
+             (let ((new-data (copy-alist data)))
+               (setf (alist-get key new-data) value)
+               (brb-event-data-write event new-data)
+               (vui-set-state :data new-data)))
 
-(defun brb-plan--render-forecast (state)
-  "Render forecast zone for STATE."
-  (let* ((event (brb-plan-state-event state))
-         (data (brb-plan-state-data state))
+           ;; Update nested wine data
+           :update-wine-data
+           (lambda (wine-id key value)
+             (let* ((new-data (copy-alist data))
+                    (wines-data (alist-get 'wines new-data))
+                    (wine-data (--find (string-equal wine-id (alist-get 'id it)) wines-data)))
+               (if wine-data
+                   (setf (alist-get key wine-data) value)
+                 ;; Create new entry
+                 (push `((id . ,wine-id) (,key . ,value)) wines-data)
+                 (setf (alist-get 'wines new-data) wines-data))
+               (brb-event-data-write event new-data)
+               (vui-set-state :data new-data)))
+
+           ;; Add pays-for relationship (payer-id pays for payee-id)
+           ;; Stored in participants: ((id . "payer-id") (pays-for . ("payee-id1" "payee-id2")))
+           :add-pays-for
+           (lambda (payer-id payee-id)
+             (let* ((new-data (copy-alist data))
+                    (participants-data (or (alist-get 'participants new-data) nil))
+                    (existing (--find (string-equal payer-id (alist-get 'id it)) participants-data)))
+               (if existing
+                   ;; Add to existing payer's pays-for list
+                   (unless (-contains-p (alist-get 'pays-for existing) payee-id)
+                     (setf (alist-get 'pays-for existing)
+                           (-uniq (append (alist-get 'pays-for existing) (list payee-id)))))
+                 ;; Create new participant entry with pays-for
+                 (push `((id . ,payer-id) (pays-for . (,payee-id))) participants-data)
+                 (setf (alist-get 'participants new-data) participants-data))
+               (brb-event-data-write event new-data)
+               (vui-set-state :data new-data)))
+
+           ;; Remove pays-for relationship
+           :remove-pays-for
+           (lambda (payer-id payee-id)
+             (let* ((new-data (copy-alist data))
+                    (participants-data (alist-get 'participants new-data))
+                    (existing (--find (string-equal payer-id (alist-get 'id it)) participants-data)))
+               (when existing
+                 (setf (alist-get 'pays-for existing)
+                       (--remove (string-equal payee-id it) (alist-get 'pays-for existing))))
+               (brb-event-data-write event new-data)
+               (vui-set-state :data new-data)))
+
+           ;; Set event metadata
+           :set-event-meta
+           (lambda (key value)
+             (vulpea-utils-with-note event
+               (vulpea-buffer-meta-set key value 'append)
+               (save-buffer))
+             (vulpea-db-update-file (vulpea-note-path event))
+             (vui-set-state :event (vulpea-db-get-by-id (vulpea-note-id event))))
+
+           ;; Set host
+           :set-host
+           (lambda (new-host)
+             (vui-set-state :host new-host)
+             (vulpea-utils-with-note event
+               (vulpea-buffer-meta-set "host" new-host 'append)
+               (save-buffer))
+             (vulpea-db-update-file (vulpea-note-path event))
+             (vui-set-state :event (vulpea-db-get-by-id (vulpea-note-id event))))
+
+           ;; Add wine
+           :add-wine
+           (lambda (wine price-public price-real)
+             (let* ((new-wines (append wines (list wine)))
+                    (new-data (copy-alist data))
+                    (wines-data (alist-get 'wines new-data))
+                    (entry `((id . ,(vulpea-note-id wine))
+                             (type . "normal")
+                             (price-public . ,price-public)
+                             (price-real . ,price-real))))
+               (push entry wines-data)
+               (setf (alist-get 'wines new-data) wines-data)
+               (vui-batch
+                (vui-set-state :wines new-wines)
+                (vui-set-state :data new-data))
+               (vulpea-utils-with-note event
+                 (vulpea-buffer-meta-set "wines" new-wines 'append)
+                 (save-buffer))
+               (brb-event-data-write event new-data)))
+
+           ;; Remove wine
+           :remove-wine
+           (lambda (wine-id)
+             (let* ((new-wines (--remove (string-equal wine-id (vulpea-note-id it)) wines))
+                    (new-data (copy-alist data)))
+               (setf (alist-get 'wines new-data)
+                     (--remove (string-equal wine-id (alist-get 'id it))
+                               (alist-get 'wines new-data)))
+               (vui-batch
+                (vui-set-state :wines new-wines)
+                (vui-set-state :data new-data))
+               (vulpea-utils-with-note event
+                 (vulpea-buffer-meta-set "wines" new-wines 'append)
+                 (save-buffer))
+               (brb-event-data-write event new-data)))
+
+           ;; Add participant
+           :add-participant
+           (lambda (person)
+             (let ((new-participants (append participants (list person))))
+               (vui-set-state :participants new-participants)
+               (vulpea-utils-with-note event
+                 (vulpea-buffer-meta-set "participants" new-participants 'append)
+                 (save-buffer))))
+
+           ;; Remove participant
+           :remove-participant
+           (lambda (pid)
+             (let* ((new-participants (--remove (string-equal pid (vulpea-note-id it)) participants))
+                    (new-data (copy-alist data)))
+               (setf (alist-get 'participants new-data)
+                     (--remove (string-equal pid (alist-get 'id it))
+                               (alist-get 'participants new-data)))
+               (vui-batch
+                (vui-set-state :participants new-participants)
+                (vui-set-state :data new-data))
+               (vulpea-utils-with-note event
+                 (vulpea-buffer-meta-set "participants" new-participants 'append)
+                 (save-buffer))
+               (brb-event-data-write event new-data)))
+
+           ;; Add to waiting list
+           :add-waiting
+           (lambda (person)
+             (let ((new-waiting (append waiting (list person))))
+               (vui-set-state :waiting new-waiting)
+               (vulpea-utils-with-note event
+                 (vulpea-buffer-meta-set "waiting" new-waiting 'append)
+                 (save-buffer))))
+
+           ;; Remove from waiting list
+           :remove-waiting
+           (lambda (pid)
+             (let ((new-waiting (--remove (string-equal pid (vulpea-note-id it)) waiting)))
+               (vui-set-state :waiting new-waiting)
+               (vulpea-utils-with-note event
+                 (vulpea-buffer-meta-set "waiting" new-waiting 'append)
+                 (save-buffer))))
+
+           ;; Promote from waiting to participant
+           :promote-waiting
+           (lambda (pid)
+             (let* ((person (--find (string-equal pid (vulpea-note-id it)) waiting))
+                    (new-waiting (--remove (string-equal pid (vulpea-note-id it)) waiting))
+                    (new-participants (append participants (list person))))
+               (vui-batch
+                (vui-set-state :waiting new-waiting)
+                (vui-set-state :participants new-participants))
+               (vulpea-utils-with-note event
+                 (vulpea-buffer-meta-set "waiting" new-waiting 'append)
+                 (vulpea-buffer-meta-set "participants" new-participants 'append)
+                 (save-buffer))))
+
+           ;; Refresh balances from ledger (as of event date)
+           :refresh-balances
+           (lambda ()
+             (let* ((date (brb-event-date-string event))
+                    (new-balances (make-hash-table :test 'equal)))
+               (--each participants
+                 (puthash (vulpea-note-id it)
+                          (brb-ledger-balance-of (vulpea-note-id it) date)
+                          new-balances))
+               (vui-set-state :balances new-balances)))
+
+           ;; Set tab
+           :set-tab
+           (lambda (new-tab)
+             (vui-set-state :tab new-tab)))))
+
+    ;; Provide all contexts and render
+    (brb-plan-event-provider event
+      (brb-plan-data-provider data
+        (brb-plan-host-provider host
+          (brb-plan-participants-provider participants
+            (brb-plan-waiting-provider waiting
+              (brb-plan-wines-provider wines
+                (brb-plan-balances-provider balances
+                  (brb-plan-actions-provider actions
+                    (vui-vstack
+                     ;; Header with tabs
+                     (vui-component 'brb-plan-header :tab tab)
+                     ;; Tab content
+                     (pcase tab
+                       ("plan" (vui-component 'brb-plan-tab-plan))
+                       ("scores" (vui-component 'brb-plan-tab-scores))
+                       ("order" (vui-component 'brb-plan-tab-order))
+                       ("extra" (vui-component 'brb-plan-tab-extra))
+                       ("invoices" (vui-component 'brb-plan-tab-invoices))
+                       (_ (vui-text (format "Unknown tab: %s" tab)))))))))))))))
+
+;;; Header Component
+
+(defcomponent brb-plan-header (tab)
+  :render
+  (let ((event (use-brb-plan-event))
+        (actions (use-brb-plan-actions)))
+    (vui-vstack
+     ;; Event title
+     (vui-text (vulpea-note-title event) :face 'org-level-1)
+     (vui-newline)
+     ;; Tab buttons
+     (vui-hstack
+      :spacing 1
+      (vui-button (if (string= tab "plan") "*plan*" "plan")
+        :face (when (string= tab "plan") 'bold)
+        :on-click (lambda () (funcall (plist-get actions :set-tab) "plan")))
+      (vui-button (if (string= tab "scores") "*scores*" "scores")
+        :face (when (string= tab "scores") 'bold)
+        :on-click (lambda () (funcall (plist-get actions :set-tab) "scores")))
+      (vui-button (if (string= tab "order") "*order*" "order")
+        :face (when (string= tab "order") 'bold)
+        :on-click (lambda () (funcall (plist-get actions :set-tab) "order")))
+      (vui-button (if (string= tab "extra") "*extra*" "extra")
+        :face (when (string= tab "extra") 'bold)
+        :on-click (lambda () (funcall (plist-get actions :set-tab) "extra")))
+      (vui-button (if (string= tab "invoices") "*invoices*" "invoices")
+        :face (when (string= tab "invoices") 'bold)
+        :on-click (lambda () (funcall (plist-get actions :set-tab) "invoices"))))
+     (vui-newline)
+     ;; Action buttons
+     (vui-hstack :spacing 1
+                 (vui-button "Open note"
+                   :on-click (lambda () (vulpea-visit event)))
+                 (vui-button "Refresh"
+                   :on-click (lambda ()
+                               ;; TODO: reload from disk
+                               (message "Refresh not yet implemented"))))
+     (vui-newline))))
+
+
+;;; Plan Tab Components
+
+(defcomponent brb-plan-tab-plan ()
+  :render
+  (vui-vstack
+   (vui-component 'brb-plan-general)
+   (vui-component 'brb-plan-forecast)
+   (vui-component 'brb-plan-finances)
+   (vui-component 'brb-plan-wines-table)
+   (vui-component 'brb-plan-shared-table)
+   (vui-component 'brb-plan-expense-wines-table)
+   (vui-component 'brb-plan-participants-table)
+   (vui-component 'brb-plan-waiting-list)))
+
+;;; General Section
+
+(defcomponent brb-plan-general ()
+  :render
+  (let ((event (use-brb-plan-event))
+        (host (use-brb-plan-host))
+        (participants (use-brb-plan-participants))
+        (actions (use-brb-plan-actions)))
+    (vui-vstack
+     (vui-text "General" :face 'org-level-2)
+     (vui-newline)
+     (vui-table
+      :columns '(()
+                 (:width 5 :grow t) ; just for extra spacing
+                 (:align :left))
+      :rows (list
+             (list
+              (vui-text "Host: ")
+              ""
+              (vui-button
+                  (if host (vulpea-note-title host) "_____")
+                :on-click (lambda ()
+                            (let* ((candidates (or participants
+                                                   (vulpea-db-query-by-tags-every '("people"))))
+                                   (new-host (vulpea-select-from "Host" candidates :require-match t)))
+                              (when new-host
+                                (funcall (plist-get actions :set-host) new-host))))))
+             (list
+              (vui-text "Price: ")
+              ""
+              (vui-button
+                  (brb-price-format (or (vulpea-note-meta-get event "price" 'number) 0))
+                :on-click (lambda ()
+                            (let ((price (read-number "Price: "
+                                                      (or (vulpea-note-meta-get event "price" 'number) 0))))
+                              (funcall (plist-get actions :set-event-meta) "price" price)))))))
+     (vui-newline))))
+
+;;; Forecast Section
+
+(defcomponent brb-plan-forecast ()
+  :render
+  (let* ((event (use-brb-plan-event))
+         (data (use-brb-plan-data))
+         (actions (use-brb-plan-actions))
          (price (or (vulpea-note-meta-get event "price" 'number) 0))
          (planned (or (alist-get 'planned-participants data) 0))
          (debit (* planned price)))
-    (widget-create 'heading-2 "Forecast")
-    (widget-create
-     'fields-group
-     (list
-      'bounded-int-field
-      :tag "Participants:"
-      :min-value 0
-      :value planned
-      :notify (lambda (widget &rest _)
-                (brb-plan--update state
-                                  'planned-participants
-                                  (widget-value widget))))
-     (list
-      'numeric-label
-      :tag "Debit:"
-      :value debit
-      :format-value (lambda (_widget val) (brb-price-format val))))
-    (widget-insert "\n")))
+    (vui-vstack
+     (vui-text "Forecast" :face 'org-level-2)
+     (vui-newline)
+     (vui-hstack
+      (vui-text "Participants: ")
+      (vui-button (if (> planned 0) (number-to-string planned) "__")
+        :on-click (lambda ()
+                    (let ((num (read-number "Planned participants: " planned)))
+                      (funcall (plist-get actions :update-data)
+                               'planned-participants num)))))
+     (vui-hstack
+      (vui-text "Debit: ")
+      (vui-text (brb-price-format debit)))
+     (vui-newline))))
 
-(defun brb-plan--render-finances (state)
-  "Render finances zone for STATE."
-  (let* ((event (brb-plan-state-event state))
-         (data (brb-plan-state-data state))
-         (participants (brb-plan-state-participants state))
-         (wines (brb-plan-state-wines state))
-         (host (brb-plan-state-host state))
-         (balances (brb-plan-state-balances state))
+
+;;; Finances Section
+
+(defcomponent brb-plan-finances ()
+  :render
+  (let* ((event (use-brb-plan-event))
+         (price (vulpea-note-meta-get event "price" 'number))
+         (data (use-brb-plan-data))
+         (participants (use-brb-plan-participants))
+         (wines (use-brb-plan-wines))
+         (host (use-brb-plan-host))
+         (balances (or (use-brb-plan-balances) (make-hash-table :test 'equal)))
          (statement (brb-event-statement event
-                                         :data data
-                                         :participants participants
-                                         :wines wines
-                                         :host host
-                                         :balances balances))
-         (spending-shared (alist-get 'spending-shared statement))
-         (spending-wines-public (alist-get 'spending-wines-public statement))
-         (spending-wines-real (alist-get 'spending-wines-real statement))
-         (spending-extra-public (alist-get 'spending-extra-public statement))
-         (spending-extra-real (alist-get 'spending-extra-real statement))
-         (spending-expense (alist-get 'spending-expense-wines statement))
-         (credit-public (alist-get 'credit-public statement))
-         (credit-real (alist-get 'credit-real statement))
-         (debit-base (alist-get 'debit-base statement))
-         (debit-extra (alist-get 'debit-extra statement))
-         (debit (alist-get 'debit statement))
-         (balance-public (alist-get 'balance-public statement))
-         (balance-real (alist-get 'balance-real statement)))
-    (widget-create 'heading-2 "Finances")
-    (widget-create
-     'table
-     :padding-type '((1 . left) (2 . left))
-     '(row (label :value "")
-       (label :value "Public")
-       (label :value "Real"))
-     '(hline)
-     `(row (label :value "Spending (shared)")
-       (label :value ,(brb-price-format spending-shared))
-       (label :value ""))
-     `(row (label :value "Spending (wines)")
-       (label :value ,(brb-price-format spending-wines-public))
-       (label :value ,(brb-price-format spending-wines-real)))
-     `(row (label :value "Spending (extra)")
-       (label :value ,(brb-price-format spending-extra-public))
-       (label :value ,(brb-price-format spending-extra-real)))
-     `(row (label :value "Spending (expense)")
-       (label :value ,(brb-price-format spending-expense))
-       (label :value ""))
-     `(row (label :value "Spending (total)")
-       (label :value ,(brb-price-format credit-public))
-       (label :value ,(brb-price-format credit-real)))
-     '(hline)
-     `(row (label :value "Debit (base)")
-       (label :value ,(brb-price-format debit-base))
-       (label :value ""))
-     `(row (label :value "Debit (extra)")
-       (label :value ,(brb-price-format debit-extra))
-       (label :value ""))
-     `(row (label :value "Debit (total)")
-       (label :value ,(brb-price-format debit))
-       (label :value ""))
-     '(hline)
-     `(row (label :value "Gain")
-       (label :value ,(brb-price-format balance-public)
-        :face ,(if (>= balance-public 0) 'success 'error))
-       (label :value ,(brb-price-format balance-real)
-        :face ,(if (>= balance-real 0) 'success 'error))))
-    (widget-insert "\n")))
+                      :data data
+                      :participants participants
+                      :wines wines
+                      :host host
+                      :balances balances)))
+    (vui-vstack
+     (vui-text "Finances" :face 'org-level-2)
+     (vui-newline)
+     (vui-table
+      :columns '((:header "" :width 20 :grow t)
+                 (:header "Public" :width 10 :grow t :align :right)
+                 (:header "Real" :width 10 :grow t :align :right))
+      :rows `(("Spending (shared)"
+               ,(brb-price-format (alist-get 'spending-shared statement))
+               "")
+              ("Spending (wines)"
+               ,(brb-price-format (alist-get 'spending-wines-public statement))
+               ,(brb-price-format (alist-get 'spending-wines-real statement)))
+              ("Spending (extra)"
+               ,(brb-price-format (alist-get 'spending-extra-public statement))
+               ,(brb-price-format (alist-get 'spending-extra-real statement)))
+              ("Spending (total)"
+               ,(brb-price-format (alist-get 'credit-public statement))
+               ,(brb-price-format (alist-get 'credit-real statement)))
+              :separator
+              ("Debit (base)"
+               ,(brb-price-format (alist-get 'debit-base statement))
+               "")
+              ("Debit (extra)"
+               ,(brb-price-format (alist-get 'debit-extra statement))
+               "")
+              ("Debit (total)"
+               ,(brb-price-format (alist-get 'debit statement))
+               "")
+              :separator
+              (,(vui-text "Gain" :face (if (>= (alist-get 'balance-public statement) 0) 'success 'error))
+               ,(vui-text (brb-price-format (alist-get 'balance-public statement))
+                 :face (if (>= (alist-get 'balance-public statement) 0) 'success 'error))
+               ,(vui-text (brb-price-format (alist-get 'balance-real statement))
+                 :face (if (>= (alist-get 'balance-real statement) 0) 'success 'error))))
+      :border :ascii)
+     (vui-newline))))
 
-(defun brb-plan--wine-data (state wine-id)
-  "Get wine data for WINE-ID from STATE."
-  (--find (string-equal wine-id (alist-get 'id it))
-          (alist-get 'wines (brb-plan-state-data state))))
 
-(defun brb-plan--wine-set-data (state wine-id key value)
-  "Set KEY to VALUE in wine data for WINE-ID in STATE."
-  (let* ((data (brb-plan-state-data state))
-         (wines-data (alist-get 'wines data))
-         (wine-data (--find (string-equal wine-id (alist-get 'id it)) wines-data)))
-    (if wine-data
-        (setf (alist-get key wine-data) value)
-      ;; Create new entry
-      (push `((id . ,wine-id) (,key . ,value)) wines-data)
-      (setf (alist-get 'wines data) wines-data))
-    (brb-plan--save-data state)
-    ;; Only redraw finances - table handles its own update
-    (brb-plan--redraw-zones state '(finances))))
+;;; Wines Table
 
-(defun brb-plan--wine-remove (state wine-id)
-  "Remove wine with WINE-ID from STATE."
-  (let* ((event (brb-plan-state-event state))
-         (wines (->> (brb-plan-state-wines state)
-                     (--remove (string-equal wine-id (vulpea-note-id it))))))
-    ;; Update state
-    (setf (brb-plan-state-wines state) wines)
-    ;; Update event metadata
-    (vulpea-utils-with-note event
-      (vulpea-buffer-meta-set "wines" wines 'append)
-      (save-buffer))
-    ;; Remove from data
-    (let ((data (brb-plan-state-data state)))
-      (setf (alist-get 'wines data)
-            (--remove (string-equal wine-id (alist-get 'id it))
-                      (alist-get 'wines data)))
-      (brb-plan--save-data state))
-    (brb-plan--redraw-zones state '(wines finances))))
+(defcomponent brb-plan-wines-table ()
+  :render
+  (let* ((data (use-brb-plan-data))
+         (wines (use-brb-plan-wines))
+         (actions (use-brb-plan-actions)))
+    (vui-vstack
+     (vui-text "Wines" :face 'org-level-2)
+     (vui-newline)
+     (vui-table
+      :columns '((:header "" :width 3 :grow t)
+                 (:header "Producer" :width 20 :grow t :truncate t)
+                 (:header "Wine" :width 36 :grow t :truncate t)
+                 (:header "Year" :width 4 :grow t)
+                 (:header "P.Pub" :width 10 :grow t :align :right)
+                 (:header "P.Real" :width 10 :grow t :align :right)
+                 (:header "Type" :width 8 :grow t))
+      :rows (append
+             ;; Wine rows
+             (--map
+              (let* ((wine it)
+                     (wine-id (vulpea-note-id wine))
+                     (wine-data (brb-plan--wine-data data wine-id))
+                     (producer (vulpea-note-meta-get wine "producer" 'note))
+                     (producer-name (if producer (vulpea-note-title producer) ""))
+                     (name (or (vulpea-note-meta-get wine "name") ""))
+                     (vintage (or (vulpea-note-meta-get wine "vintage") "NV"))
+                     (price-public (or (alist-get 'price-public wine-data) 0))
+                     (price-real (or (alist-get 'price-real wine-data) 0))
+                     (wine-type (or (alist-get 'type wine-data) "normal"))
+                     (price-real-min (-min (or (->> (vino-inv-query-available-bottles-for wine)
+                                                    (-map #'vino-inv-bottle-price)
+                                                    (--filter (s-suffix-p brb-currency it))
+                                                    (-map #'string-to-number))
+                                               (list price-real)))))
+                (list
+                 ;; Remove button
+                 (vui-button "x"
+                   :on-click (lambda ()
+                               (funcall (plist-get actions :remove-wine) wine-id)))
+                 ;; Producer
+                 producer-name
+                 ;; Wine name (clickable)
+                 (vui-button name
+                   :on-click (lambda () (vulpea-visit wine)))
+                 ;; Vintage
+                 (if (numberp vintage) (number-to-string vintage) vintage)
+                 ;; Public price (editable)
+                 (vui-button (brb-price-format price-public)
+                   :on-click (lambda ()
+                               (let ((price (read-number "Price public: " (alist-get 'amount (brb-price wine)))))
+                                 (funcall (plist-get actions :update-wine-data)
+                                          wine-id 'price-public price))))
+                 ;; Real price (editable)
+                 (vui-button (brb-price-format price-real)
+                   :on-click (lambda ()
+                               (let ((price (read-number "Price real: " price-real-min)))
+                                 (funcall (plist-get actions :update-wine-data)
+                                          wine-id 'price-real price))))
+                 ;; Type (editable)
+                 (vui-button wine-type
+                   :on-click (lambda ()
+                               (let ((type (completing-read "Type: "
+                                                            '("normal" "welcome" "bonus" "extra")
+                                                            nil t)))
+                                 (funcall (plist-get actions :update-wine-data)
+                                          wine-id 'type type))))))
+              wines)
+             ;; Add button row
+             (list
+              :separator
+              (list
+               (vui-button "+"
+                 :on-click (lambda ()
+                             (let* ((wine (vulpea-select-from
+                                           "Wine"
+                                           (--remove
+                                            (-contains-p (-map #'vulpea-note-id wines)
+                                                         (vulpea-note-id it))
+                                            (vulpea-db-query-by-tags-every '("wine" "cellar")))
+                                           :require-match t)))
+                               (when wine
+                                 (let ((price-pub (read-number "Price public: " 0))
+                                       (price-real (read-number "Price real: " 0)))
+                                   (funcall (plist-get actions :add-wine)
+                                            wine price-pub price-real))))))
+               "" "" "" "" "" "")))
+      :border :ascii)
+     (vui-newline))))
 
-(defun brb-plan--wine-add (state)
-  "Add a wine to STATE via selection."
-  (when-let ((wine (vulpea-select-from
-                    "Wine"
-                    (vulpea-db-query-by-tags-every '("wine" "cellar")))))
-    (let* ((event (brb-plan-state-event state))
-           (wines (append (brb-plan-state-wines state) (list wine))))
-      ;; Update state
-      (setf (brb-plan-state-wines state) wines)
-      ;; Update event metadata
-      (vulpea-utils-with-note event
-        (vulpea-buffer-meta-set "wines" wines 'append)
-        (save-buffer))
-      ;; Add to data with defaults
-      (let* ((data (brb-plan-state-data state))
-             (wines-data (alist-get 'wines data))
-             (entry `((id . ,(vulpea-note-id wine))
-                      (type . "normal")
-                      (price-public . 0)
-                      (price-real . 0))))
-        (push entry wines-data)
-        (setf (alist-get 'wines data) wines-data)
-        (brb-plan--save-data state))
-      (brb-plan--redraw-zones state '(wines finances)))))
 
-(defun brb-plan--render-wines (state)
-  "Render wines zone for STATE."
-  (let ((wines (brb-plan-state-wines state)))
-    (widget-create 'heading-2 "Wines")
-    (apply
-     #'widget-create
-     'table
-     :truncate '((1 . 20) (2 . 48))
-     '(hline)
-     '(row (label :value "")
-       (label :value "Producer")
-       (label :value "Wine")
-       (label :value "Year")
-       (label :value "P.Pub")
-       (label :value "P.Real")
-       (label :value "Type"))
-     '(hline)
-     (append
-      ;; Wine rows
-      (--map
-       (let* ((wine it)
-              (wine-id (vulpea-note-id wine))
-              (wine-data (brb-plan--wine-data state wine-id))
-              (producer (or (vulpea-note-title
-                             (vulpea-note-meta-get wine "producer" 'note))
-                            ""))
-              (name (or (vulpea-note-meta-get wine "name") ""))
-              (vintage (or (vulpea-note-meta-get wine "vintage" 'number) "NV"))
-              (price-public (or (alist-get 'price-public wine-data) 0))
-              (price-real (or (alist-get 'price-real wine-data) 0))
-              (wine-type (or (alist-get 'type wine-data) "normal")))
-         `(row
-           (action-button
-            :value "x"
-            :action-data ,wine-id
-            :notify (lambda (w &rest _)
-                      (brb-plan--wine-remove ,state (widget-get w :action-data))))
-           (label :value ,producer)
-           (link-button :value ,name :target ,wine)
-           (label :value ,(if (numberp vintage) (number-to-string vintage) vintage))
-           (bounded-int-field
-            :value ,price-public
-            :min-value 0
-            :action-data ,wine-id
-            :notify (lambda (w &rest _)
-                      (brb-plan--wine-set-data
-                       ,state (widget-get w :action-data)
-                       'price-public (widget-value w))))
-           (bounded-int-field
-            :value ,price-real
-            :min-value 0
-            :action-data ,wine-id
-            :notify (lambda (w &rest _)
-                      (brb-plan--wine-set-data
-                       ,state (widget-get w :action-data)
-                       'price-real (widget-value w))))
-           (menu-choice
-            :value ,wine-type
-            :tag ,wine-type
-            :format "%[%t%]"
-            ;; Custom :value-get since we don't use %v in format
-            ;; (default widget-child-value-get expects children)
-            :value-get (lambda (w) (widget-get w :value))
-            :action-data ,wine-id
-            :notify (lambda (w &rest _)
-                      (brb-plan--wine-set-data
-                       ,state (widget-get w :action-data)
-                       'type (widget-value w))
-                      ;; Notify parent table to trigger redraw
-                      (widget-default-action w)
-                      ;; Redraw finances since wine type affects calculations
-                      (brb-plan--redraw-zones ,state '(finances)))
-            (choice-item :tag "normal" :value "normal")
-            (choice-item :tag "welcome" :value "welcome")
-            (choice-item :tag "bonus" :value "bonus")
-            (choice-item :tag "extra" :value "extra"))))
-       wines)
-      ;; Footer row
-      `((hline)
-        (row
-         (action-button
-          :value "+"
-          :notify (lambda (&rest _)
-                    (brb-plan--wine-add ,state)))
-         (label :value "")
-         (label :value "")
-         (label :value "")
-         (label :value "")
-         (label :value "")
-         (label :value "")))))
-    (widget-insert "\n")))
+;;; Shared Spending Table
 
-(defun brb-plan--shared-update (state index key value)
-  "Update shared spending at INDEX, set KEY to VALUE in STATE."
-  (let* ((data (brb-plan-state-data state))
-         (shared (alist-get 'shared data))
-         (item (nth index shared)))
-    (when item
-      (setf (alist-get key item) value)
-      (brb-plan--save-data state)
-      ;; Only redraw finances - table handles its own update
-      (brb-plan--redraw-zones state '(finances)))))
-
-(defun brb-plan--shared-remove (state index)
-  "Remove shared spending at INDEX from STATE."
-  (let* ((data (brb-plan-state-data state))
+(defcomponent brb-plan-shared-table ()
+  :render
+  (let* ((data (use-brb-plan-data))
+         (actions (use-brb-plan-actions))
          (shared (alist-get 'shared data)))
-    (setf (alist-get 'shared data)
-          (-remove-at index shared))
-    (brb-plan--save-data state)
-    (brb-plan--redraw-zones state '(shared finances))))
+    (vui-vstack
+     (vui-text "Shared Spending" :face 'org-level-2)
+     (vui-newline)
+     (vui-table
+      :columns '((:header "" :width 3 :grow t)
+                 (:header "Item" :width 20 :grow t)
+                 (:header "Price" :width 10 :grow t :align :right)
+                 (:header "Amount" :width 6 :grow t :align :right)
+                 (:header "Total" :width 10 :grow t :align :right))
+      :rows (append
+             ;; Item rows
+             (--map-indexed
+              (let* ((item it)
+                     (idx it-index)
+                     (item-name (or (alist-get 'item item) ""))
+                     (price (or (alist-get 'price item) 0))
+                     (amount (or (alist-get 'amount item) 1))
+                     (total (ceiling (* amount price))))
+                (list
+                 ;; Remove button
+                 (vui-button "x"
+                   :on-click (lambda ()
+                               (let* ((new-shared (-remove-at idx shared)))
+                                 (funcall (plist-get actions :update-data)
+                                          'shared new-shared))))
+                 ;; Item name
+                 item-name
+                 ;; Price (editable)
+                 (vui-button (brb-price-format price)
+                   :on-click (lambda ()
+                               (let* ((new-price (read-number "Price: " price))
+                                      (new-item (copy-alist item))
+                                      (new-shared (copy-sequence shared)))
+                                 (setf (alist-get 'price new-item) new-price)
+                                 (setf (nth idx new-shared) new-item)
+                                 (funcall (plist-get actions :update-data)
+                                          'shared new-shared))))
+                 ;; Amount (editable)
+                 (vui-button (number-to-string amount)
+                   :on-click (lambda ()
+                               (let* ((new-amount (read-number "Amount: " amount))
+                                      (new-item (copy-alist item))
+                                      (new-shared (copy-sequence shared)))
+                                 (setf (alist-get 'amount new-item) new-amount)
+                                 (setf (nth idx new-shared) new-item)
+                                 (funcall (plist-get actions :update-data)
+                                          'shared new-shared))))
+                 ;; Total
+                 (brb-price-format total)))
+              shared)
+             ;; Add button row
+             (list
+              :separator
+              (list
+               (vui-button "+"
+                 :on-click (lambda ()
+                             (let* ((item-name (read-string "Item: "))
+                                    (new-entry `((item . ,item-name) (amount . 1) (price . 0)))
+                                    (new-shared (append shared (list new-entry))))
+                               (funcall (plist-get actions :update-data)
+                                        'shared new-shared))))
+               "" "" "" "")))
+      :border :ascii)
+     (vui-newline))))
 
-(defun brb-plan--shared-add (state)
-  "Add a new shared spending item to STATE."
-  (let* ((item-name (read-string "Item name: "))
-         (data (brb-plan-state-data state))
-         (shared (alist-get 'shared data))
-         (entry `((item . ,item-name) (amount . 1) (price . 0))))
-    (setf (alist-get 'shared data)
-          (append shared (list entry)))
-    (brb-plan--save-data state)
-    (brb-plan--redraw-zones state '(shared finances))))
 
-(defun brb-plan--render-shared (state)
-  "Render shared spending zone for STATE."
-  (let* ((data (brb-plan-state-data state))
-         (shared (alist-get 'shared data)))
-    (widget-create 'heading-2 "Shared Spending")
-    (apply
-     #'widget-create
-     'table
-     :truncate '((1 . 24))
-     '(hline)
-     '(row (label :value "")
-       (label :value "Item")
-       (label :value "Amount")
-       (label :value "Price")
-       (label :value "Total"))
-     '(hline)
-     (append
-      ;; Shared items rows
-      (--map-indexed
-       (let* ((item it)
-              (idx it-index)
-              (item-name (or (alist-get 'item item) ""))
-              (amount (or (alist-get 'amount item) 1))
-              (price (or (alist-get 'price item) 0))
-              (total (ceiling (* amount price))))
-         `(row
-           (action-button
-            :value "x"
-            :action-data ,idx
-            :notify (lambda (w &rest _)
-                      (brb-plan--shared-remove ,state (widget-get w :action-data))))
-           (label :value ,item-name)
-           (bounded-int-field
-            :value ,amount
-            :min-value 0
-            :action-data ,idx
-            :notify (lambda (w &rest _)
-                      (brb-plan--shared-update ,state (widget-get w :action-data)
-                       'amount (widget-value w))))
-           (bounded-int-field
-            :value ,price
-            :min-value 0
-            :action-data ,idx
-            :notify (lambda (w &rest _)
-                      (brb-plan--shared-update ,state (widget-get w :action-data)
-                       'price (widget-value w))))
-           (label :value ,(brb-price-format total))))
-       shared)
-      ;; Footer row
-      `((hline)
-        (row
-         (action-button
-          :value "+"
-          :notify (lambda (&rest _)
-                    (brb-plan--shared-add ,state)))
-         (label :value "")
-         (label :value "")
-         (label :value "")
-         (label :value "")))))
-    (widget-insert "\n")))
+;;; Expense Wines Table
 
-(defun brb-plan--expense-update (state index key value)
-  "Update expense wine at INDEX, set KEY to VALUE in STATE."
-  (let* ((data (brb-plan-state-data state))
-         (expense (alist-get 'expense-wines data))
-         (item (nth index expense)))
-    (when item
-      (setf (alist-get key item) value)
-      (brb-plan--save-data state)
-      ;; Only redraw finances - table handles its own update
-      (brb-plan--redraw-zones state '(finances)))))
-
-(defun brb-plan--expense-remove (state index)
-  "Remove expense wine at INDEX from STATE."
-  (let* ((data (brb-plan-state-data state))
+(defcomponent brb-plan-expense-wines-table ()
+  :render
+  (let* ((data (use-brb-plan-data))
+         (actions (use-brb-plan-actions))
          (expense (alist-get 'expense-wines data)))
-    (setf (alist-get 'expense-wines data)
-          (-remove-at index expense))
-    (brb-plan--save-data state)
-    (brb-plan--redraw-zones state '(expense finances))))
+    (vui-vstack
+     (vui-text "Expense Wines" :face 'org-level-2)
+     (vui-newline)
+     (vui-table
+      :columns '((:header "" :width 3 :grow t)
+                 (:header "Item" :width 20 :grow t)
+                 (:header "Price" :width 10 :grow t :align :right)
+                 (:header "Amount" :width 6 :grow t :align :right)
+                 (:header "Total" :width 10 :grow t :align :right))
+      :rows (append
+             ;; Item rows
+             (--map-indexed
+              (let* ((item it)
+                     (idx it-index)
+                     (item-name (or (alist-get 'item item) ""))
+                     (price (or (alist-get 'price item) 0))
+                     (amount (or (alist-get 'amount item) 1))
+                     (total (ceiling (* amount price))))
+                (list
+                 ;; Remove button
+                 (vui-button "x"
+                   :on-click (lambda ()
+                               (let* ((new-expense (-remove-at idx expense)))
+                                 (funcall (plist-get actions :update-data)
+                                          'expense-wines new-expense))))
+                 ;; Item name
+                 item-name
+                 ;; Price (editable)
+                 (vui-button (brb-price-format price)
+                   :on-click (lambda ()
+                               (let* ((new-price (read-number "Price: " price))
+                                      (new-item (copy-alist item))
+                                      (new-expense (copy-sequence expense)))
+                                 (setf (alist-get 'price new-item) new-price)
+                                 (setf (nth idx new-expense) new-item)
+                                 (funcall (plist-get actions :update-data)
+                                          'expense-wines new-expense))))
+                 ;; Amount (editable)
+                 (vui-button (number-to-string amount)
+                   :on-click (lambda ()
+                               (let* ((new-amount (read-number "Amount: " amount))
+                                      (new-item (copy-alist item))
+                                      (new-expense (copy-sequence expense)))
+                                 (setf (alist-get 'amount new-item) new-amount)
+                                 (setf (nth idx new-expense) new-item)
+                                 (funcall (plist-get actions :update-data)
+                                          'expense-wines new-expense))))
+                 ;; Total
+                 (brb-price-format total)))
+              expense)
+             ;; Add button row
+             (list
+              :separator
+              (list
+               (vui-button "+"
+                 :on-click (lambda ()
+                             (let* ((item-name (read-string "Item: "))
+                                    (new-entry `((item . ,item-name) (amount . 1) (price . 0)))
+                                    (new-expense (append expense (list new-entry))))
+                               (funcall (plist-get actions :update-data)
+                                        'expense-wines new-expense))))
+               "" "" "" "")))
+      :border :ascii)
+     (vui-newline))))
 
-(defun brb-plan--expense-add (state)
-  "Add a new expense wine item to STATE."
-  (let* ((item-name (read-string "Item name: "))
-         (data (brb-plan-state-data state))
-         (expense (alist-get 'expense-wines data))
-         (entry `((item . ,item-name) (amount . 1) (price . 0))))
-    (setf (alist-get 'expense-wines data)
-          (append expense (list entry)))
-    (brb-plan--save-data state)
-    (brb-plan--redraw-zones state '(expense finances))))
 
-(defun brb-plan--render-expense (state)
-  "Render expense wines zone for STATE."
-  (let* ((data (brb-plan-state-data state))
-         (expense (alist-get 'expense-wines data)))
-    (widget-create 'heading-2 "Expense Wines")
-    (apply
-     #'widget-create
-     'table
-     :truncate '((1 . 24))
-     '(hline)
-     '(row (label :value "")
-       (label :value "Item")
-       (label :value "Amount")
-       (label :value "Price")
-       (label :value "Total"))
-     '(hline)
-     (append
-      ;; Expense items rows
-      (--map-indexed
-       (let* ((item it)
-              (idx it-index)
-              (item-name (or (alist-get 'item item) ""))
-              (amount (or (alist-get 'amount item) 1))
-              (price (or (alist-get 'price item) 0))
-              (total (ceiling (* amount price))))
-         `(row
-           (action-button
-            :value "x"
-            :action-data ,idx
-            :notify (lambda (w &rest _)
-                      (brb-plan--expense-remove ,state (widget-get w :action-data))))
-           (label :value ,item-name)
-           (bounded-int-field
-            :value ,amount
-            :min-value 0
-            :action-data ,idx
-            :notify (lambda (w &rest _)
-                      (brb-plan--expense-update ,state (widget-get w :action-data)
-                       'amount (widget-value w))))
-           (bounded-int-field
-            :value ,price
-            :min-value 0
-            :action-data ,idx
-            :notify (lambda (w &rest _)
-                      (brb-plan--expense-update ,state (widget-get w :action-data)
-                       'price (widget-value w))))
-           (label :value ,(brb-price-format total))))
-       expense)
-      ;; Footer row
-      `((hline)
-        (row
-         (action-button
-          :value "+"
-          :notify (lambda (&rest _)
-                    (brb-plan--expense-add ,state)))
-         (label :value "")
-         (label :value "")
-         (label :value "")
-         (label :value "")))))
-    (widget-insert "\n")))
+;;; Participants Table
 
-(defun brb-plan--participant-data (state pid)
-  "Get participant data for PID from STATE."
-  (--find (string-equal pid (alist-get 'id it))
-          (alist-get 'participants (brb-plan-state-data state))))
-
-(defun brb-plan--participant-set-fee (state pid fee)
-  "Set FEE for participant PID in STATE."
-  (let* ((data (brb-plan-state-data state))
-         (participants-data (alist-get 'participants data))
-         (p-data (--find (string-equal pid (alist-get 'id it)) participants-data)))
-    (if p-data
-        (setf (alist-get 'fee p-data) fee)
-      ;; Create new entry
-      (push `((id . ,pid) (fee . ,fee)) participants-data)
-      (setf (alist-get 'participants data) participants-data))
-    (brb-plan--save-data state)
-    ;; Only redraw finances - table handles its own update
-    (brb-plan--redraw-zones state '(finances))))
-
-(defun brb-plan--participant-remove (state pid)
-  "Remove participant with PID from STATE."
-  (let* ((event (brb-plan-state-event state))
-         (participants (->> (brb-plan-state-participants state)
-                            (--remove (string-equal pid (vulpea-note-id it))))))
-    ;; Update state
-    (setf (brb-plan-state-participants state) participants)
-    ;; Update event metadata
-    (vulpea-utils-with-note event
-      (vulpea-buffer-meta-set "participants" participants 'append)
-      (save-buffer))
-    ;; Remove from data
-    (let ((data (brb-plan-state-data state)))
-      (setf (alist-get 'participants data)
-            (--remove (string-equal pid (alist-get 'id it))
-                      (alist-get 'participants data)))
-      (brb-plan--save-data state))
-    (brb-plan--redraw-zones state '(participants finances))))
-
-(defun brb-plan--participant-add (state)
-  "Add a participant to STATE via selection."
-  (when-let ((person (vulpea-select-from
-                      "Participant"
-                      (vulpea-db-query-by-tags-every '("people")))))
-    (let* ((event (brb-plan-state-event state))
-           (participants (append (brb-plan-state-participants state) (list person))))
-      ;; Update state
-      (setf (brb-plan-state-participants state) participants)
-      ;; Update event metadata
-      (vulpea-utils-with-note event
-        (vulpea-buffer-meta-set "participants" participants 'append)
-        (save-buffer))
-      (brb-plan--redraw-zones state '(participants finances)))))
-
-(defun brb-plan--render-participants (state)
-  "Render participants zone for STATE."
-  (let* ((participants (brb-plan-state-participants state))
-         (event (brb-plan-state-event state))
+(defcomponent brb-plan-participants-table ()
+  :render
+  (let* ((event (use-brb-plan-event))
+         (data (use-brb-plan-data))
+         (participants (use-brb-plan-participants))
+         (host (use-brb-plan-host))
+         (actions (use-brb-plan-actions))
          (price (or (vulpea-note-meta-get event "price" 'number) 0))
-         (host (brb-plan-state-host state))
          (host-id (when host (vulpea-note-id host))))
-    (widget-create 'heading-2 "Participants")
-    (apply
-     #'widget-create
-     'table
-     :truncate '((1 . 24))
-     '(hline)
-     '(row (label :value "")
-       (label :value "Participant")
-       (label :value "Mode")
-       (label :value "Fee"))
-     '(hline)
-     (append
-      ;; Participant rows
-      (--map
-       (let* ((person it)
-              (pid (vulpea-note-id person))
-              (name (vulpea-note-title person))
-              (p-data (brb-plan--participant-data state pid))
-              (host-p (string-equal pid host-id))
-              (custom-fee (alist-get 'fee p-data))
-              (fee (cond (host-p 0)
-                         (custom-fee custom-fee)
-                         (t price)))
-              (mode (cond (host-p "host")
-                          (custom-fee "custom")
-                          (t "normal"))))
-         `(row
-           (action-button
-            :value "x"
-            :action-data ,pid
-            :notify (lambda (w &rest _)
-                      (brb-plan--participant-remove ,state (widget-get w :action-data))))
-           (label :value ,name)
-           (label :value ,mode)
-           ,(if host-p
-                `(label :value "0")
-              `(bounded-int-field
-                :value ,fee
-                :min-value 0
-                :action-data ,pid
-                :notify (lambda (w &rest _)
-                          (brb-plan--participant-set-fee
-                           ,state (widget-get w :action-data)
-                           (widget-value w)))))))
-       participants)
-      ;; Footer row
-      `((hline)
-        (row
-         (action-button
-          :value "+"
-          :notify (lambda (&rest _)
-                    (brb-plan--participant-add ,state)))
-         (label :value "")
-         (label :value "")
-         (label :value "")))))
-    (widget-insert "\n")))
+    (vui-vstack
+     (vui-text (format "Participants (%d)" (length participants)) :face 'org-level-2)
+     (vui-newline)
+     (vui-table
+      :columns '((:header "" :width 3 :grow t)
+                 (:header "Participant" :width 20 :grow t)
+                 (:header "Mode" :width 8 :grow t)
+                 (:header "Fee" :width 10 :grow t :align :right))
+      :rows (append
+             ;; Participant rows
+             (--map
+              (let* ((person it)
+                     (pid (vulpea-note-id person))
+                     (name (vulpea-note-title person))
+                     (p-data (brb-plan--participant-data data pid))
+                     (host-p (and host-id (string-equal pid host-id)))
+                     (custom-fee (alist-get 'fee p-data))
+                     (fee (cond (host-p 0)
+                                (custom-fee custom-fee)
+                                (t price)))
+                     (mode (cond (host-p "host")
+                                 (custom-fee "custom")
+                                 (t "normal"))))
+                (list
+                 ;; Remove button
+                 (vui-button "x"
+                   :on-click (lambda ()
+                               (funcall (plist-get actions :remove-participant) pid)))
+                 ;; Name
+                 name
+                 ;; Mode
+                 mode
+                 ;; Fee (editable unless host)
+                 (if host-p
+                     "0"
+                   (vui-button (brb-price-format fee)
+                     :on-click (lambda ()
+                                 (let* ((new-fee (read-number "Fee: " fee))
+                                        (new-data (copy-alist data))
+                                        (p-list (alist-get 'participants new-data))
+                                        (p-entry (--find (string-equal pid (alist-get 'id it)) p-list)))
+                                   (if p-entry
+                                       (setf (alist-get 'fee p-entry) (unless (= new-fee price) new-fee))
+                                     (push `((id . ,pid) (fee . ,(unless (= new-fee price) new-fee))) p-list)
+                                     (setf (alist-get 'participants new-data) p-list))
+                                   (funcall (plist-get actions :update-data)
+                                            'participants (alist-get 'participants new-data))))))))
+              participants)
+             ;; Add button row
+             (list
+              :separator
+              (list
+               (vui-button "+"
+                 :on-click (lambda ()
+                             (let ((person (vulpea-select-from
+                                            "Participant"
+                                            (--remove
+                                             (-contains-p (-map #'vulpea-note-id participants)
+                                                          (vulpea-note-id it))
+                                             (vulpea-db-query-by-tags-every '("people")))
+                                            :require-match t)))
+                               (when person
+                                 (funcall (plist-get actions :add-participant) person)))))
+               "" "" "")))
+      :border :ascii)
+     (vui-newline))))
 
-(defun brb-plan--waiting-remove (state pid)
-  "Remove person with PID from waiting list in STATE."
-  (let* ((event (brb-plan-state-event state))
-         (waiting (--remove (string-equal pid (vulpea-note-id it))
-                            (brb-plan-state-waiting state))))
-    (setf (brb-plan-state-waiting state) waiting)
-    ;; Persist to note metadata
-    (vulpea-utils-with-note event
-      (vulpea-buffer-meta-set "waiting" waiting 'append)
-      (save-buffer))
-    (brb-plan--redraw-zone state 'waiting)))
 
-(defun brb-plan--waiting-promote (state pid)
-  "Promote person with PID from waiting to participants in STATE."
-  (let* ((event (brb-plan-state-event state))
-         (current-waiting (brb-plan-state-waiting state))
-         (person (--find (string-equal pid (vulpea-note-id it)) current-waiting)))
-    (when person
-      ;; Remove from waiting
-      (let ((new-waiting (--remove (string-equal pid (vulpea-note-id it)) current-waiting)))
-        (setf (brb-plan-state-waiting state) new-waiting)
-        ;; Add to participants
-        (let ((participants (append (brb-plan-state-participants state) (list person))))
-          (setf (brb-plan-state-participants state) participants)
-          ;; Persist both to note metadata
-          (vulpea-utils-with-note event
-            (vulpea-buffer-meta-set "waiting" new-waiting 'append)
-            (vulpea-buffer-meta-set "participants" participants 'append)
-            (save-buffer))))
-      (brb-plan--redraw-zones state '(waiting participants finances)))))
+;;; Waiting List
 
-(defun brb-plan--waiting-add (state)
-  "Add a person to waiting list in STATE."
-  (when-let ((person (vulpea-select-from
-                      "Person"
-                      (vulpea-db-query-by-tags-every '("people")))))
-    (let* ((event (brb-plan-state-event state))
-           (waiting (append (brb-plan-state-waiting state) (list person))))
-      (setf (brb-plan-state-waiting state) waiting)
-      ;; Persist to note metadata
-      (vulpea-utils-with-note event
-        (vulpea-buffer-meta-set "waiting" waiting 'append)
-        (save-buffer))
-      (brb-plan--redraw-zone state 'waiting))))
+(defcomponent brb-plan-waiting-list ()
+  :render
+  (let ((waiting (use-brb-plan-waiting))
+        (actions (use-brb-plan-actions)))
+    (vui-vstack
+     (vui-text (format "Waiting List (%d)" (length waiting)) :face 'org-level-2)
+     (vui-newline)
+     (if (null waiting)
+         (vui-text "(empty)")
+       (vui-list waiting
+                 (lambda (person)
+                   (let ((pid (vulpea-note-id person))
+                         (name (vulpea-note-title person)))
+                     (vui-hstack
+                      (vui-button "x"
+                        :on-click (lambda ()
+                                    (funcall (plist-get actions :remove-waiting) pid)))
+                      (vui-button "↑"
+                        :on-click (lambda ()
+                                    (funcall (plist-get actions :promote-waiting) pid)))
+                      (vui-text name))))
+                 #'vulpea-note-id))
+     (vui-hstack
+      (vui-button "+"
+        :on-click (lambda ()
+                    (let ((person (vulpea-select-from
+                                   "Person"
+                                   (vulpea-db-query-by-tags-every '("people"))
+                                   :require-match t)))
+                      (when person
+                        (funcall (plist-get actions :add-waiting) person))))))
+     (vui-newline))))
 
-(defun brb-plan--render-waiting (state)
-  "Render waiting list zone for STATE."
-  (let ((waiting (brb-plan-state-waiting state)))
-    (widget-create 'heading-2 "Waiting List")
-    (if (null waiting)
-        (widget-insert "(empty)\n")
-      (dolist (person waiting)
-        (let ((pid (vulpea-note-id person))
-              (name (vulpea-note-title person)))
-          (widget-insert "  ")
-          (widget-create 'label :value name)
-          (widget-insert " ")
-          (widget-create 'action-button
-                         :value "[x]"
-                         :action-data pid
-                         :notify `(lambda (w &rest _)
-                                    (brb-plan--waiting-remove ,state (widget-get w :action-data))))
-          (widget-insert " ")
-          (widget-create 'action-button
-                         :value "[↑]"
-                         :action-data pid
-                         :notify `(lambda (w &rest _)
-                                    (brb-plan--waiting-promote ,state (widget-get w :action-data))))
-          (widget-insert "\n"))))
-    (widget-create 'action-button
-                   :value "[+] Add"
-                   :notify `(lambda (&rest _)
-                              (brb-plan--waiting-add ,state)))
-    (widget-insert "\n")))
 
-;;; * Scores zone renderers
+;;; Scores Tab Components
 
-(defun brb-plan--render-scores-summary (state)
-  "Render scores summary zone for STATE."
-  (let* ((event (brb-plan-state-event state))
-         (summary (brb-event-summary event))
+(defcomponent brb-plan-tab-scores ()
+  :render
+  (vui-vstack
+   (vui-component 'brb-plan-scores-summary)
+   (vui-component 'brb-plan-wines-ranking-table)
+   (vui-component 'brb-plan-scores-matrix)))
+
+
+;;; Scores Summary
+
+(defcomponent brb-plan-scores-summary ()
+  :render
+  (let* ((event (use-brb-plan-event))
+         (data (use-brb-plan-data))
+         (wines (use-brb-plan-wines))
+         (participants (use-brb-plan-participants))
+         (summary (brb-event-summary event :data data :wines wines :participants participants))
          (event-rms (alist-get 'rms summary))
          (event-wavg (alist-get 'wavg summary))
          (event-qpr (alist-get 'qpr summary))
          (price-harmonic (alist-get 'wines-price-harmonic summary))
          (price-median (alist-get 'wines-price-median summary)))
-    (widget-create 'heading-2 "Summary")
-    (widget-create
-     'table
-     '(hline)
-     `(row (label :value "RMS")
-       (label :value ,(if event-rms (format "%.4f" event-rms) "—")))
-     `(row (label :value "WAVG")
-       (label :value ,(if event-wavg (format "%.4f" event-wavg) "—")))
-     `(row (label :value "QPR")
-       (label :value ,(if event-qpr (format "%.4f" event-qpr) "—")))
-     '(hline)
-     `(row (label :value "Price (harmonic)")
-       (label :value ,(if price-harmonic (brb-price-format price-harmonic) "—")))
-     `(row (label :value "Price (median)")
-       (label :value ,(if price-median (brb-price-format price-median) "—")))
-     '(hline))
-    (widget-insert "\n")))
+    (vui-vstack
+     (vui-text "Summary" :face 'org-level-2)
+     (vui-newline)
+     (vui-table
+      :columns '((:width 16 :grow t)
+                 (:width 10 :grow t :align :right))
+      :rows `(("RMS:" ,(if event-rms (format "%.4f" event-rms) "—"))
+              ("WAVG:" ,(if event-wavg (format "%.4f" event-wavg) "—"))
+              ("QPR:" ,(if event-qpr (format "%.4f" event-qpr) "—"))
+              ("Price (harmonic):" ,(if price-harmonic (brb-price-format price-harmonic) "—"))
+              ("Price (median):" ,(if price-median (brb-price-format price-median) "—"))))
+     (vui-newline))))
+
+
+;;; Wines Ranking Table
 
 (defun brb-plan--compute-places (wines-data)
-  "Compute places for WINES-DATA based on WAVG with ties.
-Wines with same WAVG get same place. Wines without WAVG get no place."
+  "Compute places for WINES-DATA based on WAVG with ties."
   (let* ((places (make-hash-table :test 'equal))
-         ;; Sort by wavg descending for ranking
          (wines-sorted (->> wines-data
                             (--filter (alist-get 'wavg it))
                             (--sort (> (alist-get 'wavg it)
@@ -970,68 +931,154 @@ Wines with same WAVG get same place. Wines without WAVG get no place."
         (setq prev-wavg wavg)))
     places))
 
-(defun brb-plan--render-scores-wines (state)
-  "Render wines scores zone for STATE."
-  (let* ((event (brb-plan-state-event state))
-         (summary (brb-event-summary event))
+(defcomponent brb-plan-wines-ranking-table ()
+  :render
+  (let* ((event (use-brb-plan-event))
+         (data (use-brb-plan-data))
+         (wines (use-brb-plan-wines))
+         (participants (use-brb-plan-participants))
+         (actions (use-brb-plan-actions))
+         (raw-wines-data (alist-get 'wines data))
+         (summary (brb-event-summary event :data data :wines wines :participants participants))
          (wines-data (alist-get 'wines summary))
-         ;; Keep original order, filter out ignored wines
          (wines-display (--remove (alist-get 'ignore-scores it) wines-data))
          (places (brb-plan--compute-places wines-display)))
-    (widget-create 'heading-2 "Wines")
-    (apply
-     #'widget-create
-     'table
-     :truncate '((2 . 16) (3 . 20))
-     :padding-type '((0 . left) (5 . left) (6 . left) (7 . left) (8 . left) (9 . left))
-     '(hline)
-     '(row (label :value "#")
-       (label :value "##")
-       (label :value "Producer")
-       (label :value "Wine")
-       (label :value "Year")
-       (label :value "WAVG")
-       (label :value "Sdev")
-       (label :value "QPR")
-       (label :value "Fav")
-       (label :value "Out"))
-     '(hline)
-     (append
-      (--map-indexed
-       (let* ((wine-data it)
-              (order (1+ it-index))
-              (wine (alist-get 'wine wine-data))
-              (wine-id (vulpea-note-id wine))
-              (place (gethash wine-id places))
-              (producer (or (vulpea-note-title
-                             (vulpea-note-meta-get wine "producer" 'note))
-                            ""))
-              (name (or (vulpea-note-meta-get wine "name") ""))
-              (vintage (or (vulpea-note-meta-get wine "vintage" 'number) "NV"))
-              (wavg (alist-get 'wavg wine-data))
-              (sdev (alist-get 'sdev wine-data))
-              (qpr (alist-get 'qpr wine-data))
-              (fav (alist-get 'fav wine-data))
-              (out (alist-get 'out wine-data)))
-         `(row
-           (label :value ,(number-to-string order))
-           (label :value ,(if place (number-to-string place) ""))
-           (label :value ,producer)
-           (link-button :value ,name :target ,wine)
-           (label :value ,(if (numberp vintage) (number-to-string vintage) vintage))
-           (label :value ,(if wavg (format "%.2f" wavg) "—"))
-           (label :value ,(if sdev (format "%.2f" sdev) "—"))
-           (label :value ,(if qpr (format "%.2f" qpr) "—"))
-           (label :value ,(number-to-string (or fav 0)))
-           (label :value ,(number-to-string (or out 0)))))
-       wines-display)
-      '((hline))))
-    (widget-insert "\n")))
+    (vui-vstack
+     (vui-text "Wines Ranking" :face 'org-level-2)
+     (vui-newline)
+     (vui-table
+      :columns '((:header "#" :width 3 :grow t)
+                 (:header "##" :width 3 :grow t)
+                 (:header "Producer" :width 16 :grow t :truncate t)
+                 (:header "Wine" :width 28 :grow t :truncate t)
+                 (:header "Year" :width 4 :grow t)
+                 (:header "WAVG" :width 6 :grow t :align :right)
+                 (:header "Sdev" :width 6 :grow t :align :right)
+                 (:header "QPR" :width 6 :grow t :align :right)
+                 (:header "Fav" :width 3 :grow t :align :right)
+                 (:header "Out" :width 3 :grow t :align :right)
+                 (:header "Inc" :width 3 :grow t :align :center)
+                 (:header "Rev" :width 3 :grow t :align :center))
+      :rows (--map-indexed
+             (let* ((wine-data it)
+                    (order (1+ it-index))
+                    (wine (alist-get 'wine wine-data))
+                    (wine-id (vulpea-note-id wine))
+                    (raw-wine-data (--find (string-equal wine-id (alist-get 'id it)) raw-wines-data))
+                    (ignore-scores (alist-get 'ignore-scores raw-wine-data))
+                    (revealed (not (alist-get 'blind raw-wine-data)))
+                    (place (gethash wine-id places))
+                    (producer (vulpea-note-meta-get wine "producer" 'note))
+                    (producer-name (if producer (vulpea-note-title producer) ""))
+                    (name (or (vulpea-note-meta-get wine "name") ""))
+                    (vintage (or (vulpea-note-meta-get wine "vintage") "NV"))
+                    (wavg (alist-get 'wavg wine-data))
+                    (sdev (alist-get 'sdev wine-data))
+                    (qpr (alist-get 'qpr wine-data))
+                    (fav (alist-get 'fav wine-data))
+                    (out (alist-get 'out wine-data)))
+               (list
+                (number-to-string order)
+                (if place (number-to-string place) "")
+                (if revealed producer-name "****")
+                (vui-button (if revealed name "****")
+                  :on-click (lambda () (vulpea-visit wine)))
+                (if revealed
+                    (if (numberp vintage) (number-to-string vintage) vintage)
+                  "****")
+                (if wavg (format "%.4f" wavg) "—")
+                (if sdev (format "%.4f" sdev) "—")
+                (if qpr (format "%.4f" qpr) "—")
+                (number-to-string (or fav 0))
+                (number-to-string (or out 0))
+                ;; Include toggle (inverted: checked = included, unchecked = ignored)
+                (vui-checkbox :checked (not ignore-scores)
+                              :on-change (lambda (v)
+                                           (funcall (plist-get actions :update-wine-data)
+                                                    wine-id 'ignore-scores (not v))))
+                ;; Reveal toggle
+                (vui-checkbox :checked revealed
+                              :on-change (lambda (v)
+                                           (funcall (plist-get actions :update-wine-data)
+                                                    wine-id 'blind (not v))))))
+             wines-data)
+      :border :ascii)
+     (vui-newline))))
 
-(defun brb-plan--score-set (state wine-id participant-id score)
-  "Set SCORE for WINE-ID and PARTICIPANT-ID in STATE."
-  (let* ((data (brb-plan-state-data state))
-         (wines-data (alist-get 'wines data))
+
+;;; Personal Scores Matrix
+
+(defcomponent brb-plan-scores-matrix ()
+  :render
+  (let* ((data (use-brb-plan-data))
+         (participants (use-brb-plan-participants))
+         (wines (use-brb-plan-wines))
+         (actions (use-brb-plan-actions))
+         (wines-data (alist-get 'wines data)))
+    (vui-vstack
+     (vui-text "Personal Scores" :face 'org-level-2)
+     (vui-newline)
+     (if (or (null participants) (null wines))
+         (vui-text "(no participants or wines)")
+       (vui-table
+        :columns (cons '(:header "" :width 16 :truncate t)
+                       (--map-indexed
+                        `(:header ,(format "#%d" (1+ it-index)) :width 6)
+                        wines))
+        :rows (--map
+               (let ((person it)
+                     (pid (vulpea-note-id it))
+                     (name (vulpea-note-title it)))
+                 (cons (vui-button name :on-click (lambda () (vulpea-visit it)))
+                       (--map
+                        (let* ((wine it)
+                               (wid (vulpea-note-id wine))
+                               (wine-data (--find (string-equal wid (alist-get 'id it)) wines-data))
+                               (score-data (when wine-data
+                                             (--find (string-equal pid (alist-get 'participant it))
+                                                     (alist-get 'scores wine-data))))
+                               (score (when score-data (alist-get 'score score-data)))
+                               (sentiment (when score-data (alist-get 'sentiment score-data)))
+                               (sentiment-char (pcase sentiment
+                                                 ("favourite" "♥")
+                                                 ("outcast" "✗")
+                                                 (_ (if score " " ""))))
+                               (display (format "%s%s"
+                                                (if score (format "%.1f" score) "—")
+                                                sentiment-char)))
+                          (vui-button display
+                            :on-click (lambda ()
+                                        (brb-plan--score-edit
+                                         actions data wid pid score sentiment))))
+                        wines)))
+               participants)
+        :border :ascii))
+     (vui-newline))))
+
+(defun brb-plan--score-edit (actions data wine-id participant-id current-score current-sentiment)
+  "Edit score for WINE-ID and PARTICIPANT-ID.
+ACTIONS is the actions plist. DATA is the current data.
+CURRENT-SCORE and CURRENT-SENTIMENT are current values."
+  (let* ((prompt (format "Score (0-5, f=♥, o=✗, c=clear): "))
+         (input (read-string prompt)))
+    (cond
+     ((string-equal "f" input)
+      (brb-plan--sentiment-set actions data wine-id participant-id "favourite"))
+     ((string-equal "o" input)
+      (brb-plan--sentiment-set actions data wine-id participant-id "outcast"))
+     ((string-equal "c" input)
+      (brb-plan--sentiment-set actions data wine-id participant-id nil))
+     ((string-empty-p input) nil)
+     (t
+      (let ((score (string-to-number input)))
+        (when (and (>= score 0) (<= score 5))
+          ;; Score 0 means "clear score" (nil)
+          (brb-plan--score-set actions data wine-id participant-id
+                               (if (zerop score) nil score))))))))
+
+(defun brb-plan--score-set (actions data wine-id participant-id score)
+  "Set SCORE for WINE-ID and PARTICIPANT-ID using ACTIONS with DATA."
+  (let* ((wines-data (copy-alist (alist-get 'wines data)))
          (wine-data (--find (string-equal wine-id (alist-get 'id it)) wines-data)))
     (if wine-data
         (let ((scores (alist-get 'scores wine-data))
@@ -1039,27 +1086,16 @@ Wines with same WAVG get same place. Wines without WAVG get no place."
                                   (alist-get 'scores wine-data))))
           (if score-data
               (setf (alist-get 'score score-data) score)
-            ;; Create new score entry
-            (push `((participant . ,participant-id)
-                    (score . ,score)
-                    (sentiment . nil))
-                  scores)
+            (push `((participant . ,participant-id) (score . ,score) (sentiment . nil)) scores)
             (setf (alist-get 'scores wine-data) scores)))
-      ;; Create wine entry with score
       (push `((id . ,wine-id)
-              (scores . (((participant . ,participant-id)
-                          (score . ,score)
-                          (sentiment . nil)))))
-            wines-data)
-      (setf (alist-get 'wines data) wines-data))
-    (brb-plan--save-data state)
-    ;; Only redraw summary zones - table handles its own update
-    (brb-plan--redraw-zones state '(scores-summary scores-wines))))
+              (scores . (((participant . ,participant-id) (score . ,score) (sentiment . nil)))))
+            wines-data))
+    (funcall (plist-get actions :update-data) 'wines wines-data)))
 
-(defun brb-plan--sentiment-set (state wine-id participant-id sentiment)
-  "Set SENTIMENT for WINE-ID and PARTICIPANT-ID in STATE."
-  (let* ((data (brb-plan-state-data state))
-         (wines-data (alist-get 'wines data))
+(defun brb-plan--sentiment-set (actions data wine-id participant-id sentiment)
+  "Set SENTIMENT for WINE-ID and PARTICIPANT-ID using ACTIONS with DATA."
+  (let* ((wines-data (copy-alist (alist-get 'wines data)))
          (wine-data (--find (string-equal wine-id (alist-get 'id it)) wines-data)))
     (if wine-data
         (let ((scores (alist-get 'scores wine-data))
@@ -1067,499 +1103,322 @@ Wines with same WAVG get same place. Wines without WAVG get no place."
                                   (alist-get 'scores wine-data))))
           (if score-data
               (setf (alist-get 'sentiment score-data) sentiment)
-            ;; Create new score entry with sentiment
-            (push `((participant . ,participant-id)
-                    (score . nil)
-                    (sentiment . ,sentiment))
-                  scores)
+            (push `((participant . ,participant-id) (score . nil) (sentiment . ,sentiment)) scores)
             (setf (alist-get 'scores wine-data) scores)))
-      ;; Create wine entry with sentiment
       (push `((id . ,wine-id)
-              (scores . (((participant . ,participant-id)
-                          (score . nil)
-                          (sentiment . ,sentiment)))))
-            wines-data)
-      (setf (alist-get 'wines data) wines-data))
-    (brb-plan--save-data state)
-    ;; Only redraw summary zones - table handles its own update
-    (brb-plan--redraw-zones state '(scores-summary scores-wines))))
+              (scores . (((participant . ,participant-id) (score . nil) (sentiment . ,sentiment)))))
+            wines-data))
+    (funcall (plist-get actions :update-data) 'wines wines-data)))
 
-(defun brb-plan--sentiment-cycle (state wine-id participant-id current)
-  "Cycle sentiment for WINE-ID and PARTICIPANT-ID in STATE.
-CURRENT is the current sentiment value."
-  (let ((next (pcase current
-                ("favourite" "outcast")
-                ("outcast" nil)
-                (_ "favourite"))))
-    (brb-plan--sentiment-set state wine-id participant-id next)))
 
-(defun brb-plan--score-edit (state wine-id participant-id current-score current-sentiment)
-  "Edit score for WINE-ID and PARTICIPANT-ID in STATE.
-CURRENT-SCORE and CURRENT-SENTIMENT are the current values.
-Prompts for new score, or f=fav, o=outcast, c=clear sentiment."
-  (let* ((prompt (format "Score (0-5, f=♥, o=✗, c=clear, current: %s%s): "
-                         (if current-score (format "%.1f" current-score) "—")
-                         (pcase current-sentiment
-                           ("favourite" "♥")
-                           ("outcast" "✗")
-                           (_ ""))))
-         (input (read-string prompt))
-         ;; Save line and column for stable restoration
-         (line (line-number-at-pos))
-         (col (current-column)))
-    (cond
-     ((string-equal "f" input)
-      (brb-plan--sentiment-set state wine-id participant-id "favourite")
-      (brb-plan--redraw-zones state '(scores-personal))
-      (goto-char (point-min))
-      (forward-line (1- line))
-      (move-to-column col))
-     ((string-equal "o" input)
-      (brb-plan--sentiment-set state wine-id participant-id "outcast")
-      (brb-plan--redraw-zones state '(scores-personal))
-      (goto-char (point-min))
-      (forward-line (1- line))
-      (move-to-column col))
-     ((string-equal "c" input)
-      (brb-plan--sentiment-set state wine-id participant-id nil)
-      (brb-plan--redraw-zones state '(scores-personal))
-      (goto-char (point-min))
-      (forward-line (1- line))
-      (move-to-column col))
-     ((string-empty-p input)
-      ;; Do nothing on empty input
-      nil)
-     (t
-      (let ((score (string-to-number input)))
-        (when (and (>= score 0) (<= score 5))
-          (brb-plan--score-set state wine-id participant-id score)
-          (brb-plan--redraw-zones state '(scores-personal))
-          (goto-char (point-min))
-          (forward-line (1- line))
-          (move-to-column col)))))))
+;;; Order Tab Components
 
-(defun brb-plan--render-scores-personal (state)
-  "Render personal scores zone for STATE."
-  (let* ((data (brb-plan-state-data state))
-         (participants (brb-plan-state-participants state))
-         (wines (brb-plan-state-wines state))
-         (wines-data (alist-get 'wines data)))
-    (widget-create 'heading-2 "Personal Scores")
-    (when (and participants wines)
-      (apply
-       #'widget-create
-       'table
-       :truncate (cons '(0 . 16)
-                       (--map-indexed `(,(1+ it-index) . 6) wines))
-       '(hline)
-       ;; Header row with wine numbers
-       `(row (label :value "Participant")
-         ,@(--map-indexed
-            `(label :value ,(format "#%d" (1+ it-index)))
-            wines))
-       '(hline)
-       (append
-        ;; One row per participant
-        (--map
-         (let* ((person it)
-                (pid (vulpea-note-id person))
-                (name (vulpea-note-title person)))
-           `(row
-             (link-button :value ,name :target ,person)
-             ,@(--map
-                (let* ((wine it)
-                       (wid (vulpea-note-id wine))
-                       (wine-data (--find (string-equal wid (alist-get 'id it)) wines-data))
-                       (score-data (when wine-data
-                                    (--find (string-equal pid (alist-get 'participant it))
-                                     (alist-get 'scores wine-data))))
-                       (score (when score-data (alist-get 'score score-data)))
-                       (sentiment (when score-data (alist-get 'sentiment score-data)))
-                       (sentiment-char (pcase sentiment
-                                        ("favourite" "♥")
-                                        ("outcast" "✗")
-                                        (_ ""))))
-                 ;; Combined score + sentiment display
-                 `(label
-                   :value ,(concat (if score (format "%.1f" score) "—")
-                            sentiment-char)
-                   :action-data (,wid ,pid ,score ,sentiment)
-                   :format "%[%v%]"
-                   :notify (lambda (w &rest _)
-                             (let ((data (widget-get w :action-data)))
-                              (brb-plan--score-edit
-                               ,state
-                               (nth 0 data) (nth 1 data)
-                               (nth 2 data) (nth 3 data))))))
-                wines)))
-         participants)
-        '((hline)))))
-    (widget-insert "\n")))
+(defcomponent brb-plan-tab-order ()
+  :render
+  (vui-vstack
+   (vui-component 'brb-plan-order-summary)
+   (vui-component 'brb-plan-order-personal)))
 
-;;; * Order tab
 
-(defun brb-plan--render-orders-summary (state)
-  "Render orders summary zone for STATE.
-Shows all order items with total quantities across participants."
-  (let* ((data (brb-plan-state-data state))
-         (personal (alist-get 'personal data))
-         (participants (brb-plan-state-participants state)))
-    (widget-create 'heading-2 "All Orders")
-    (if (null personal)
-        (widget-insert "No orders yet.\n")
-      (let* ((grand-total-qty
-              (-sum (--map
-                     (-sum (--map (alist-get 'amount it) (alist-get 'orders it)))
-                     personal)))
-             (grand-total-price
-              (-sum (--map
-                     (let ((price (alist-get 'price it))
-                           (qty (-sum (--map (alist-get 'amount it) (alist-get 'orders it)))))
-                       (ceiling (* price qty)))
-                     personal))))
-        (apply
-         #'widget-create
-         'table
-         :truncate '((1 . 24))
-         :padding-type '((2 . left) (3 . left) (4 . left))
-         '(hline)
-         '(row (label :value "")
-           (label :value "Item")
-           (label :value "Price")
-           (label :value "Qty")
-           (label :value "Total")
-           (label :value "Participants"))
-         '(hline)
-         (append
-          (--map-indexed
-           (let* ((item it)
-                  (idx it-index)
-                  (item-name (or (alist-get 'item item) ""))
-                  (price (or (alist-get 'price item) 0))
-                  (orders (alist-get 'orders item))
-                  (total-qty (-sum (--map (alist-get 'amount it) orders)))
-                  (total-price (ceiling (* price total-qty)))
-                  (participant-names
-                   (--map
-                    (let ((pid (alist-get 'participant it)))
-                      (vulpea-note-title
-                       (--find (string= (vulpea-note-id it) pid) participants)))
-                    orders)))
-             `(row
-               (action-button
-                :value "x"
-                :action-data ,idx
-                :notify (lambda (w &rest _)
-                          (brb-plan--order-remove ,state (widget-get w :action-data))))
-               (label :value ,item-name)
-               (label :value ,(brb-price-format price))
-               (label :value ,(number-to-string total-qty))
-               (label :value ,(brb-price-format total-price))
-               (label :value ,(string-join participant-names ", ") :truncate 30)))
-           personal)
-          `((hline)
-            (row
-             (label :value "")
-             (label :value "")
-             (label :value "")
-             (label :value ,(number-to-string grand-total-qty))
-             (label :value ,(brb-price-format grand-total-price))
-             (label :value "")))))))
-    (widget-insert "\n")))
+;;; Order Summary
 
-(defun brb-plan--render-orders-personal (state)
-  "Render per-participant order zones for STATE."
-  (let* ((data (brb-plan-state-data state))
-         (personal (alist-get 'personal data))
-         (participants (brb-plan-state-participants state)))
-    (widget-create 'heading-2 "Orders by Participant")
-    (--each participants
-      (let* ((participant it)
-             (pid (vulpea-note-id participant))
-             (name (vulpea-note-title participant))
-             ;; Build participant's order list from personal items
-             (participant-orders
-              (->> personal
-                   (--map
-                    (let* ((item-orders (alist-get 'orders it))
-                           (order-entry (--find (string= pid (alist-get 'participant it))
-                                                item-orders))
-                           (amount (when order-entry (alist-get 'amount order-entry))))
-                      (when (and amount (> amount 0))
-                        `((item . ,(alist-get 'item it))
-                          (price . ,(alist-get 'price it))
-                          (amount . ,amount)
-                          (total . ,(ceiling (* amount (alist-get 'price it))))))))
-                   (-non-nil)))
-             (participant-total
-              (-sum (--map (alist-get 'total it) participant-orders))))
-        (widget-insert "\n")
-        (widget-create 'heading-3 name)
-        (if (null participant-orders)
-            (progn
-              (widget-insert "No orders. ")
-              (widget-create
-               'action-button
-               :value "[+ Add]"
-               :notify `(lambda (&rest _)
-                          (brb-plan--order-add-for-participant
-                           ,state ,pid)))
-              (widget-insert "\n"))
-          (apply
-           #'widget-create
-           'table
-           :truncate '((1 . 20))
-           :padding-type '((2 . left) (3 . left) (4 . left))
-           '(row (label :value "")
-             (label :value "Item")
-             (label :value "Price")
-             (label :value "Qty")
-             (label :value "Total"))
-           '(hline)
-           (append
-            (--map
-             (let* ((order it)
-                    (item-name (alist-get 'item order))
-                    (price (alist-get 'price order))
-                    (amount (alist-get 'amount order))
-                    (total (alist-get 'total order)))
-               `(row
-                 (action-button
-                  :value "x"
-                  :action-data (,item-name . ,pid)
-                  :notify (lambda (w &rest _)
-                            (let ((data (widget-get w :action-data)))
-                             (brb-plan--order-remove-participant
-                              ,state (car data) (cdr data)))))
-                 (label :value ,item-name)
-                 (label :value ,(brb-price-format price))
-                 (bounded-int-field
-                  :value ,amount
-                  :min-value 1
-                  :max-value 99
-                  :action-data (,item-name . ,pid)
-                  :notify (lambda (w &rest _)
-                            (let ((data (widget-get w :action-data)))
-                             (brb-plan--order-update-qty
-                              ,state (car data) (cdr data) (widget-value w)))))
-                 (label :value ,(brb-price-format total))))
-             participant-orders)
-            `((hline)
-              (row
-               (action-button
-                :value "+"
-                :action-data ,pid
-                :notify (lambda (w &rest _)
-                          (brb-plan--order-add-for-participant
-                           ,state (widget-get w :action-data))))
-               (label :value "")
-               (label :value "")
-               (label :value "Total:")
-               (label :value ,(brb-price-format participant-total)))))))))))
-
-(defun brb-plan--order-remove (state index)
-  "Remove item at INDEX from personal orders in STATE."
-  (let* ((data (brb-plan-state-data state))
+(defcomponent brb-plan-order-summary ()
+  :render
+  (let* ((data (use-brb-plan-data))
+         (participants (use-brb-plan-participants))
+         (actions (use-brb-plan-actions))
          (personal (alist-get 'personal data)))
-    (setf (alist-get 'personal data)
-          (-remove-at index personal))
-    (brb-plan--save-data state)
-    (brb-plan--redraw-zones state '(orders-summary orders-personal finances))))
+    (vui-vstack
+     (vui-text "All Orders" :face 'org-level-2)
+     (vui-newline)
+     (if (null personal)
+         (vui-text "No orders yet.")
+       (let* ((grand-total-qty
+               (-sum (--map
+                      (-sum (--map (alist-get 'amount it) (alist-get 'orders it)))
+                      personal)))
+              (grand-total-price
+               (-sum (--map
+                      (* (alist-get 'price it)
+                         (-sum (--map (alist-get 'amount it) (alist-get 'orders it))))
+                      personal))))
+         (vui-table
+          :columns '((:header "" :width 3)
+                     (:header "Item" :width 38 :truncate t)
+                     (:header "Price" :width 10 :align :right)
+                     (:header "Qty" :width 4 :align :right)
+                     (:header "Total" :width 10 :align :right)
+                     (:header "Participants" :width 34 :truncate t))
+          :rows (append
+                 (--map-indexed
+                  (let* ((item it)
+                         (idx it-index)
+                         (item-name (or (alist-get 'item item) ""))
+                         (price (or (alist-get 'price item) 0))
+                         (orders (alist-get 'orders item))
+                         (total-qty (-sum (--map (alist-get 'amount it) orders)))
+                         (total-price (* price total-qty))
+                         (participant-names
+                          (string-join
+                           (--map
+                            (let ((pid (alist-get 'participant it)))
+                              (vulpea-note-title
+                               (--find (string= (vulpea-note-id it) pid) participants)))
+                            orders)
+                           ", ")))
+                    (list
+                     (vui-button "x"
+                       :on-click (lambda ()
+                                   (let ((new-personal (-remove-at idx personal)))
+                                     (funcall (plist-get actions :update-data)
+                                              'personal new-personal))))
+                     item-name
+                     (brb-price-format price)
+                     (number-to-string total-qty)
+                     (brb-price-format total-price)
+                     participant-names))
+                  personal)
+                 (list
+                  :separator
+                  (list "" "" "" (number-to-string grand-total-qty)
+                        (brb-price-format grand-total-price) "")))
+          :border :ascii)))
+     (vui-newline))))
 
-(defun brb-plan--order-remove-participant (state item-name participant-id)
-  "Remove PARTICIPANT-ID from item ITEM-NAME in STATE."
-  (let* ((data (brb-plan-state-data state))
-         (personal (alist-get 'personal data))
-         (item (--find (string= item-name (alist-get 'item it)) personal)))
-    (when item
-      (setf (alist-get 'orders item)
-            (--remove (string= participant-id (alist-get 'participant it))
-                      (alist-get 'orders item)))
-      ;; If no participants left, remove the entire item
-      (when (null (alist-get 'orders item))
-        (setf (alist-get 'personal data)
-              (--remove (string= item-name (alist-get 'item it)) personal))))
-    (brb-plan--save-data state)
-    (brb-plan--redraw-zones state '(orders-summary orders-personal finances))))
 
-(defun brb-plan--order-update-qty (state item-name participant-id amount)
-  "Update AMOUNT for PARTICIPANT-ID in item ITEM-NAME in STATE."
-  (let* ((data (brb-plan-state-data state))
-         (personal (alist-get 'personal data))
-         (item (--find (string= item-name (alist-get 'item it)) personal))
-         (order-entry (when item
-                        (--find (string= participant-id (alist-get 'participant it))
-                                (alist-get 'orders item)))))
-    (when order-entry
-      (setf (alist-get 'amount order-entry) amount)
-      (brb-plan--save-data state)
-      ;; Save cursor position by line/column for stable restoration
-      (let ((line (line-number-at-pos))
-            (col (current-column)))
-        (brb-plan--redraw-zones state '(orders-summary orders-personal finances))
-        (goto-char (point-min))
-        (forward-line (1- line))
-        (move-to-column col)))))
+;;; Per-Participant Orders
 
-(defun brb-plan--order-add-for-participant (state participant-id)
-  "Add order item for PARTICIPANT-ID in STATE."
-  (let* ((data (brb-plan-state-data state))
-         (personal (or (alist-get 'personal data) '()))
-         (item-name (completing-read "Item: " (--map (alist-get 'item it) personal)))
+(defcomponent brb-plan-order-personal ()
+  :render
+  (let* ((data (use-brb-plan-data))
+         (participants (use-brb-plan-participants))
+         (actions (use-brb-plan-actions))
+         (personal (alist-get 'personal data)))
+    (vui-vstack
+     (vui-text "Orders by Participant" :face 'org-level-2)
+     (vui-newline)
+     (vui-list participants
+               (lambda (person)
+                 (let* ((pid (vulpea-note-id person))
+                        (name (vulpea-note-title person))
+                        (participant-orders
+                         (->> personal
+                              (--map
+                               (let* ((order-entry (--find (string= pid (alist-get 'participant it))
+                                                           (alist-get 'orders it)))
+                                      (amount (when order-entry (alist-get 'amount order-entry))))
+                                 (when (and amount (> amount 0))
+                                   `((item . ,(alist-get 'item it))
+                                     (price . ,(alist-get 'price it))
+                                     (amount . ,amount)
+                                     (total . ,(* amount (alist-get 'price it)))))))
+                              (-non-nil)))
+                        (participant-total (-sum (--map (alist-get 'total it) participant-orders))))
+                   (vui-vstack
+                    (vui-text name :face 'bold)
+                    (if (null participant-orders)
+                        (vui-hstack
+                         (vui-text "No orders. ")
+                         (vui-button "+ Add"
+                           :on-click (lambda ()
+                                       (brb-plan--order-add actions data personal pid))))
+                      (vui-table
+                       :columns '((:width 3)
+                                  (:width 24 :truncate t)
+                                  (:width 10 :align :right)
+                                  (:width 5 :align :center)
+                                  (:width 10 :align :right))
+                       :rows (append
+                              (--map
+                               (let ((item-name (alist-get 'item it))
+                                     (price (alist-get 'price it))
+                                     (amount (alist-get 'amount it))
+                                     (total (alist-get 'total it)))
+                                 (list
+                                  (vui-button "x"
+                                    :on-click (lambda ()
+                                                (brb-plan--order-remove-participant
+                                                 actions data personal item-name pid)))
+                                  item-name
+                                  (brb-price-format price)
+                                  (vui-button (format "%d" amount)
+                                    :on-click (lambda ()
+                                                (let ((new-amount (read-number "Amount: " amount)))
+                                                  (brb-plan--order-update-qty
+                                                   actions data personal item-name pid new-amount))))
+                                  (brb-price-format total)))
+                               participant-orders)
+                              (list
+                               (list
+                                (vui-button "+"
+                                  :on-click (lambda ()
+                                              (brb-plan--order-add actions data personal pid)))
+                                ""
+                                ""
+                                "Total:"
+                                (brb-price-format participant-total))))))
+                    (vui-newline))))
+               #'vulpea-note-id))))
+
+(defun brb-plan--order-add (actions data personal pid)
+  "Add order for participant PID using ACTIONS with DATA and PERSONAL."
+  (let* ((item-name (completing-read "Item: " (--map (alist-get 'item it) personal)))
          (existing (--find (string= item-name (alist-get 'item it)) personal))
          (price (or (when existing (alist-get 'price existing))
                     (read-number "Price: " 0)))
          (amount (read-number "Amount: " 1))
-         (new-order `((participant . ,participant-id)
-                      (amount . ,amount))))
+         (new-order `((participant . ,pid) (amount . ,amount))))
     (if existing
-        ;; Add/update participant in existing item
         (let* ((orders (alist-get 'orders existing))
-               (order-entry (--find (string= participant-id (alist-get 'participant it))
-                                    orders)))
+               (order-entry (--find (string= pid (alist-get 'participant it)) orders)))
           (if order-entry
-              ;; Update existing amount
               (setf (alist-get 'amount order-entry) amount)
-            ;; Add new participant entry
-            (setf (alist-get 'orders existing)
-                  (append orders (list new-order)))))
-      ;; Create new item
-      (let ((new-item `((item . ,item-name)
-                        (price . ,price)
-                        (orders . (,new-order)))))
-        (setf (alist-get 'personal data)
-              (append personal (list new-item)))))
-    (brb-plan--save-data state)
-    (brb-plan--redraw-zones state '(orders-summary orders-personal finances))))
+            (setf (alist-get 'orders existing) (append orders (list new-order)))))
+      (let ((new-item `((item . ,item-name) (price . ,price) (orders . (,new-order)))))
+        (setq personal (append personal (list new-item)))))
+    (funcall (plist-get actions :update-data) 'personal personal)))
 
-;;; * Extra tab
+(defun brb-plan--order-remove-participant (actions data personal item-name pid)
+  "Remove PID from item ITEM-NAME using ACTIONS with DATA and PERSONAL."
+  (let ((item (--find (string= item-name (alist-get 'item it)) personal)))
+    (when item
+      (setf (alist-get 'orders item)
+            (--remove (string= pid (alist-get 'participant it))
+                      (alist-get 'orders item)))
+      (when (null (alist-get 'orders item))
+        (setq personal (--remove (string= item-name (alist-get 'item it)) personal))))
+    (funcall (plist-get actions :update-data) 'personal personal)))
 
-(defun brb-plan--extra-glass-price (wine-data)
-  "Calculate glass price for extra wine from WINE-DATA."
-  (let ((asking (or (alist-get 'price-asking wine-data)
-                    (alist-get 'price-public wine-data)
-                    0))
-        (participants (alist-get 'participants wine-data)))
-    (if (and participants (> (length participants) 0))
-        (ceiling (/ (float asking) (length participants)))
-      0)))
+(defun brb-plan--order-update-qty (actions data personal item-name pid amount)
+  "Update AMOUNT for PID in item ITEM-NAME using ACTIONS."
+  (let* ((item (--find (string= item-name (alist-get 'item it)) personal))
+         (order-entry (when item
+                        (--find (string= pid (alist-get 'participant it))
+                                (alist-get 'orders item)))))
+    (when order-entry
+      (setf (alist-get 'amount order-entry) amount)
+      (funcall (plist-get actions :update-data) 'personal personal))))
 
-(defun brb-plan--extra-set-asking-price (state wine-id)
-  "Set asking price for extra wine WINE-ID in STATE."
-  (let* ((price (read-number "Asking price: "))
-         (data (brb-plan-state-data state))
+
+;;; Extra Tab Components
+
+(defcomponent brb-plan-tab-extra ()
+  :render
+  (let* ((data (use-brb-plan-data))
+         (wines (use-brb-plan-wines))
+         (participants (use-brb-plan-participants))
+         (actions (use-brb-plan-actions))
          (wines-data (alist-get 'wines data))
-         (wine-data (--find (string= wine-id (alist-get 'id it)) wines-data)))
-    (when wine-data
-      (setf (alist-get 'price-asking wine-data) price)
-      (brb-plan--save-data state)
-      (brb-plan--redraw-zones state '(extra-wines finances)))))
+         (extra-wines (--filter
+                       (let* ((wid (vulpea-note-id it))
+                              (wd (--find (string= wid (alist-get 'id it)) wines-data)))
+                         (string= "extra" (alist-get 'type wd)))
+                       wines)))
+    (vui-vstack
+     (vui-text "Extra Wines" :face 'org-level-2)
+     (vui-newline)
+     (if (null extra-wines)
+         (vui-text "No extra wines. Mark a wine as type \"extra\" in the Plan tab.")
+       (vui-list extra-wines
+                 (lambda (wine)
+                   (let* ((wine-id (vulpea-note-id wine))
+                          (wine-data (--find (string= wine-id (alist-get 'id it)) wines-data))
+                          (price-public (or (alist-get 'price-public wine-data) 0))
+                          (price-real (or (alist-get 'price-real wine-data) 0))
+                          (price-asking (or (alist-get 'price-asking wine-data) price-public))
+                          (wine-participants (alist-get 'participants wine-data))
+                          (participant-count (length wine-participants))
+                          (glass-price (brb-plan--glass-price wine-data)))
+                     (vui-vstack
+                      (vui-text (format "--- %s ---" (vulpea-note-title wine)) :face 'bold)
+                      (vui-hstack (vui-text "Price public: ")
+                                  (vui-text (brb-price-format price-public)))
+                      (vui-hstack (vui-text "Price real:   ")
+                                  (vui-text (brb-price-format price-real)))
+                      (vui-hstack (vui-text "Asking price: ")
+                                  (vui-button (brb-price-format price-asking)
+                                    :on-click (lambda ()
+                                                (let ((price (read-number "Asking price: " price-asking)))
+                                                  (funcall (plist-get actions :update-wine-data)
+                                                           wine-id 'price-asking price)))))
+                      (vui-hstack (vui-text "Participants: ")
+                                  (vui-text (number-to-string participant-count)))
+                      (vui-hstack (vui-text "Glass price:  ")
+                                  (vui-text (brb-price-format glass-price)))
+                      (vui-newline)
+                      ;; Participant toggles
+                      (vui-list participants
+                                (lambda (person)
+                                  (let* ((pid (vulpea-note-id person))
+                                         (name (vulpea-note-title person))
+                                         (included (member pid wine-participants)))
+                                    (vui-hstack
+                                     (vui-button (if included "X" " ")
+                                       :on-click (lambda ()
+                                                   (brb-plan--extra-toggle
+                                                    actions data wines-data wine-id pid)))
+                                     (vui-text name))))
+                                #'vulpea-note-id)
+                      (vui-newline))))
+                 #'vulpea-note-id))
+     (vui-newline))))
 
-(defun brb-plan--extra-toggle-participant (state wine-id participant-id)
-  "Toggle PARTICIPANT-ID for extra wine WINE-ID in STATE."
-  (let* ((data (brb-plan-state-data state))
-         (wines-data (alist-get 'wines data))
-         (wine-data (--find (string= wine-id (alist-get 'id it)) wines-data)))
+(defun brb-plan--extra-toggle (actions data wines-data wine-id pid)
+  "Toggle PID for extra wine WINE-ID using ACTIONS."
+  (let ((wine-data (--find (string= wine-id (alist-get 'id it)) wines-data)))
     (when wine-data
       (let ((participants (alist-get 'participants wine-data)))
-        (if (member participant-id participants)
+        (if (member pid participants)
             (setf (alist-get 'participants wine-data)
-                  (--remove (string= it participant-id) participants))
+                  (--remove (string= it pid) participants))
           (setf (alist-get 'participants wine-data)
-                (cons participant-id participants))))
-      (brb-plan--save-data state)
-      (brb-plan--redraw-zones state '(extra-wines finances)))))
+                (cons pid participants))))
+      (funcall (plist-get actions :update-data) 'wines wines-data))))
 
-(defun brb-plan--render-extra-wines (state)
-  "Render extra wines zone for STATE."
-  (let* ((data (brb-plan-state-data state))
-         (wines-data (alist-get 'wines data))
-         (wines (brb-plan-state-wines state))
-         (participants (brb-plan-state-participants state))
-         ;; Filter to only extra type wines
-         (extra-wines
-          (--filter
-           (let* ((wid (vulpea-note-id it))
-                  (wd (--find (string= wid (alist-get 'id it)) wines-data)))
-             (string= "extra" (alist-get 'type wd)))
-           wines)))
-    (widget-create 'heading-2 "Extra Wines")
-    (if (null extra-wines)
-        (widget-insert "No extra wines. Mark a wine as type \"extra\" in the Plan tab.\n")
-      (--each extra-wines
-        (let* ((wine it)
-               (wine-id (vulpea-note-id wine))
-               (wine-data (--find (string= wine-id (alist-get 'id it)) wines-data))
-               (price-public (or (alist-get 'price-public wine-data) 0))
-               (price-real (or (alist-get 'price-real wine-data) 0))
-               (price-asking (or (alist-get 'price-asking wine-data) price-public))
-               (wine-participants (alist-get 'participants wine-data))
-               (participant-count (length wine-participants))
-               (glass-price (brb-plan--extra-glass-price wine-data)))
-          (widget-insert "\n")
-          (widget-create 'heading-3 (vulpea-note-title wine))
-          (widget-create
-           'table
-           :padding-type '((1 . left))
-           `(row (label :value "Price public:")
-             (label :value ,(brb-price-format price-public)))
-           `(row (label :value "Price real:")
-             (label :value ,(brb-price-format price-real)))
-           `(row (label :value "Asking price:")
-             (action-button
-              :value ,(brb-price-format price-asking)
-              :action-data ,wine-id
-              :notify (lambda (w &rest _)
-                        (brb-plan--extra-set-asking-price
-                         ,state (widget-get w :action-data)))))
-           `(row (label :value "Participants:")
-             (label :value ,(number-to-string participant-count)))
-           `(row (label :value "Glass price:")
-             (label :value ,(brb-price-format glass-price))))
-          (widget-insert "\n")
-          ;; Participant toggles
-          (--each participants
-            (let* ((person it)
-                   (pid (vulpea-note-id person))
-                   (name (vulpea-note-title person))
-                   (included (member pid wine-participants)))
-              (widget-insert "  ")
-              (widget-create
-               'action-button
-               :value (if included "[+]" "[-]")
-               :action-data (cons wine-id pid)
-               :notify `(lambda (w &rest _)
-                          (let ((data (widget-get w :action-data)))
-                           (brb-plan--extra-toggle-participant
-                            ,state (car data) (cdr data)))))
-              (widget-insert " ")
-              (widget-create 'label :value name)
-              (widget-insert "\n")))
-          (widget-insert "\n"))))
-    (widget-insert "\n")))
 
-;;; * Invoices tab
+;;; Invoices Tab Components
 
-(defun brb-plan--refresh-balances (state)
-  "Refresh participant balances from ledger for STATE."
-  (let ((balances (brb-plan-state-balances state)))
-    (clrhash balances)
-    (--each (brb-plan-state-participants state)
-      (let* ((pid (vulpea-note-id it))
-             (balance (brb-ledger-balance-of it)))
-        (puthash pid balance balances)))
-    (brb-plan--redraw-zones state '(invoices-personal finances))))
+(defcomponent brb-plan-tab-invoices ()
+  :render
+  (vui-vstack
+   (vui-component 'brb-plan-invoice-actions)
+   (vui-component 'brb-plan-invoice-settings)
+   (vui-component 'brb-plan-invoices-personal)))
 
-(defun brb-plan--charge-all (state)
-  "Record charges for all participants to ledger for STATE."
-  (let* ((event (brb-plan-state-event state))
-         (data (brb-plan-state-data state))
-         (participants (brb-plan-state-participants state))
-         (wines (brb-plan-state-wines state))
-         (host (brb-plan-state-host state))
-         (balances (brb-plan-state-balances state))
-         (date (vulpea-utils-with-note event
-                 (vulpea-buffer-prop-get "date"))))
+
+;;; Invoice Actions
+
+(defcomponent brb-plan-invoice-actions ()
+  :render
+  (let ((actions (use-brb-plan-actions))
+        (event (use-brb-plan-event))
+        (data (use-brb-plan-data))
+        (participants (use-brb-plan-participants))
+        (wines (use-brb-plan-wines))
+        (host (use-brb-plan-host))
+        (balances (or (use-brb-plan-balances) (make-hash-table :test 'equal))))
+    (vui-vstack
+     (vui-text "Actions" :face 'org-level-2)
+     (vui-newline)
+     (vui-hstack :spacing 1
+                 (vui-button "Refresh Balances"
+                   :on-click (lambda ()
+                               (funcall (plist-get actions :refresh-balances))
+                               (message "Balances refreshed")))
+                 (vui-button "Charge All"
+                   :on-click (lambda ()
+                               (brb-plan--charge-all event data participants wines host balances)
+                               (message "All participants charged")))
+                 (vui-button "Record Spendings"
+                   :on-click (lambda ()
+                               (brb-plan--record-spendings event data participants wines host balances)
+                               (message "Spendings recorded"))))
+     (vui-newline))))
+
+(defun brb-plan--charge-all (event data participants wines host balances)
+  "Record charges for all participants."
+  (let ((date (vulpea-utils-with-note event
+                (vulpea-buffer-prop-get "date"))))
     (--each participants
       (unless (and host (string= (vulpea-note-id it) (vulpea-note-id host)))
         (let ((st (brb-event-statement-for
@@ -1567,29 +1426,23 @@ Shows all order items with total quantities across participants."
                    :data data
                    :host host
                    :wines wines
-                   :balances balances)))
+                   :balances balances
+                   :participants participants)))
           (brb-ledger-charge
            :convive it
            :code (concat (vulpea-note-id event) ":" (vulpea-note-id it))
            :amount (alist-get 'total st)
            :date (date-to-time date)
-           :comment (vulpea-note-title event)))))
-    (message "Charged all participants.")))
+           :comment (vulpea-note-title event)))))))
 
-(defun brb-plan--record-spendings (state)
-  "Record event spendings to ledger for STATE."
-  (let* ((event (brb-plan-state-event state))
-         (data (brb-plan-state-data state))
-         (participants (brb-plan-state-participants state))
-         (wines (brb-plan-state-wines state))
-         (host (brb-plan-state-host state))
-         (balances (brb-plan-state-balances state))
-         (statement (brb-event-statement event
-                                         :data data
-                                         :participants participants
-                                         :wines wines
-                                         :host host
-                                         :balances balances))
+(defun brb-plan--record-spendings (event data participants wines host balances)
+  "Record event spendings to ledger."
+  (let* ((statement (brb-event-statement event
+                      :data data
+                      :participants participants
+                      :wines wines
+                      :host host
+                      :balances balances))
          (date (vulpea-utils-with-note event
                  (vulpea-buffer-prop-get "date"))))
     (brb-ledger-record-txn
@@ -1623,246 +1476,204 @@ Shows all order items with total quantities across participants."
      :amount (alist-get 'spending-order statement)
      :date (date-to-time date)
      :comment (format "%s: delivery" (vulpea-note-title event))
-     :code (concat (vulpea-note-id event) ":delivery"))
-    (message "Recorded spendings.")))
+     :code (concat (vulpea-note-id event) ":delivery"))))
 
-(defun brb-plan--render-invoices-actions (state)
-  "Render invoices actions zone for STATE."
-  (widget-create 'heading-2 "Actions")
-  (widget-create 'action-button
-                 :value "[Refresh Balances]"
-                 :notify `(lambda (&rest _)
-                            (brb-plan--refresh-balances ,state)))
-  (widget-insert " ")
-  (widget-create 'action-button
-                 :value "[Charge All]"
-                 :notify `(lambda (&rest _)
-                            (brb-plan--charge-all ,state)))
-  (widget-insert " ")
-  (widget-create 'action-button
-                 :value "[Record Spendings]"
-                 :notify `(lambda (&rest _)
-                            (brb-plan--record-spendings ,state)))
-  (widget-insert "\n\n"))
 
-(defun brb-plan--render-invoices-settings (state)
-  "Render invoices settings zone for STATE."
-  (let* ((event (brb-plan-state-event state))
+;;; Invoice Settings
+
+(defcomponent brb-plan-invoice-settings ()
+  :render
+  (let* ((event (use-brb-plan-event))
+         (actions (use-brb-plan-actions))
          (use-balance (or (vulpea-note-meta-get event "use balance") "true"))
          (pay-url (vulpea-note-meta-get event "pay url" 'link)))
-    (widget-create 'heading-2 "Settings")
-    (widget-create
-     'table
-     :padding-type '((1 . left))
-     `(row (label :value "Use balance:")
-       (action-button
-        :value ,(format "[%s]" (if (string= use-balance "true") "X" " "))
-        :notify (lambda (&rest _)
-                  (let ((new-val (if (string= ,use-balance "true") "false" "true")))
-                   (vulpea-utils-with-note (brb-plan-state-event ,state)
-                    (vulpea-buffer-meta-set "use balance" new-val 'append)
-                    (save-buffer))
-                   (brb-plan--reload ,state)))))
-     `(row (label :value "Pay URL:")
-       (action-button
-        :value ,(format "[%s]" (or pay-url "not set"))
-        :notify (lambda (&rest _)
-                  (let ((url (read-string "Pay URL: ")))
-                   (vulpea-utils-with-note (brb-plan-state-event ,state)
-                    (vulpea-buffer-meta-set "pay url" url 'append)
-                    (save-buffer))
-                   (brb-plan--reload ,state))))))
-    (widget-insert "\n")))
+    (vui-vstack
+     (vui-text "Settings" :face 'org-level-2)
+     (vui-newline)
+     (vui-hstack
+      (vui-text "Use balance: ")
+      (vui-button (if (string= use-balance "true") "X" " ")
+        :on-click (lambda ()
+                    (let ((new-val (if (string= use-balance "true") "false" "true")))
+                      (funcall (plist-get actions :set-event-meta) "use balance" new-val)))))
+     (vui-hstack
+      (vui-text "Pay URL: ")
+      (vui-button (or pay-url "not set")
+        :on-click (lambda ()
+                    (let ((url (read-string "Pay URL: " (or pay-url ""))))
+                      (funcall (plist-get actions :set-event-meta) "pay url" url)))))
+     (vui-newline))))
 
-(defun brb-plan--render-invoices-personal (state)
-  "Render per-participant invoice zones for STATE."
-  (let* ((event (brb-plan-state-event state))
-         (data (brb-plan-state-data state))
-         (participants (brb-plan-state-participants state))
-         (wines (brb-plan-state-wines state))
-         (host (brb-plan-state-host state))
-         (balances (brb-plan-state-balances state))
+
+;;; Per-Participant Invoices
+
+(defcomponent brb-plan-invoices-personal ()
+  :render
+  (let* ((event (use-brb-plan-event))
+         (data (use-brb-plan-data))
+         (participants (use-brb-plan-participants))
+         (wines (use-brb-plan-wines))
+         (host (use-brb-plan-host))
+         (actions (use-brb-plan-actions))
+         (balances (or (use-brb-plan-balances) (make-hash-table :test 'equal)))
          (use-balance (string= "true" (or (vulpea-note-meta-get event "use balance") "true"))))
-    (widget-create 'heading-2 "Invoices")
-    (--each participants
-      (let* ((participant it)
-             (pid (vulpea-note-id participant))
-             (name (vulpea-note-title participant))
-             (balance (gethash pid balances 0))
-             (st (brb-event-statement-for
-                  event participant
-                  :data data
-                  :host host
-                  :wines wines
-                  :balances balances))
-             (fee (alist-get 'fee st))
-             (order (alist-get 'order st))
-             (extra (alist-get 'extra st))
-             (total (alist-get 'total st))
-             (balance-final (alist-get 'balance-final st))
-             (due (alist-get 'due st)))
-        (widget-insert "\n")
-        (widget-create 'heading-3 name)
-        ;; Invoice details
-        (apply
-         #'widget-create
-         'table
-         :padding-type '((1 . left))
-         (append
-          (when (and use-balance (not (= balance 0)))
-            `((row (label :value "Starting balance:")
-               (label :value ,(brb-price-format balance)))))
-          `((row (label :value "Event fee:")
-             (label :value ,(brb-price-format fee))))
-          (--map
-           `(row (label :value ,(format "Order: %s" (alist-get 'item it)))
-             (label :value ,(brb-price-format (alist-get 'total it))))
-           order)
-          (--map
-           `(row (label :value ,(format "Extra: %s" (vulpea-note-title (alist-get 'wine it))))
-             (label :value ,(brb-price-format (alist-get 'total it))))
-           extra)
-          '((hline))
-          `((row (label :value "Total:")
-             (label :value ,(brb-price-format total))))
-          (when (and use-balance (not (= balance 0)))
-            `((row (label :value "Final balance:")
-               (label :value ,(brb-price-format balance-final)))
-              (row (label :value "Due:")
-               (label :value ,(brb-price-format due)
-                :face ,(if (> due 0) 'error 'success)))))))
-        (widget-insert "\n")))))
+    (vui-vstack
+     (vui-text "Invoices" :face 'org-level-2)
+     (vui-newline)
+     (vui-list participants
+               (lambda (person)
+                 (let* ((pid (vulpea-note-id person))
+                        (name (vulpea-note-title person))
+                        (st (brb-event-statement-for
+                             event person
+                             :data data
+                             :host host
+                             :wines wines
+                             :balances balances
+                             :participants participants))
+                        (paid-by-id (alist-get 'paid-by st)))
+                   ;; Skip participants who are paid for by someone else
+                   (unless paid-by-id
+                     (let* ((fee (alist-get 'fee st))
+                            (base-fee (alist-get 'base-fee st))
+                            (paying-for (alist-get 'paying-for st))
+                            (paying-for-fees (alist-get 'paying-for-fees st))
+                            (order (alist-get 'order st))
+                            (extra (alist-get 'extra st))
+                            (paying-for-orders (alist-get 'paying-for-orders st))
+                            (paying-for-extras (alist-get 'paying-for-extras st))
+                            (total (alist-get 'total st))
+                            (balance (alist-get 'balance st))
+                            (balance-final (alist-get 'balance-final st))
+                            (due (alist-get 'due st)))
+                       (vui-vstack
+                        (vui-text name :face 'org-level-3)
+                        (vui-newline)
+                        ;; Pays for section
+                        (vui-hstack
+                         (vui-text "Pays for ")
+                         (vui-button "+"
+                           :on-click (lambda ()
+                                       (brb-plan--add-pays-for actions participants pid paying-for))))
+                        (when paying-for
+                          (vui-list paying-for
+                                    (lambda (payee-id)
+                                      (let ((payee (--find (string-equal payee-id (vulpea-note-id it)) participants)))
+                                        (vui-hstack
+                                         (vui-text "  ")
+                                         (vui-button "x"
+                                           :on-click (lambda ()
+                                                       (funcall (plist-get actions :remove-pays-for) pid payee-id)))
+                                         (vui-space)
+                                         (vui-text (if payee (vulpea-note-title payee) payee-id)))))
+                                    #'identity
+                                    :vertical t))
+                        (vui-newline)
+                        ;; Invoice breakdown as table
+                        (vui-table
+                         :columns '((:width 44 :truncate t)
+                                    (:width 12 :align :right))
+                         :rows (append
+                                ;; Starting balance (if applicable)
+                                (when (and use-balance (not (= balance 0)))
+                                  (list (list "Starting balance" (brb-price-format balance))))
+                                ;; Event fee
+                                (if (and paying-for (> paying-for-fees 0))
+                                    (list
+                                     (list "Event fee (self)" (brb-price-format base-fee))
+                                     (list (format "Event fee (%d others)" (length paying-for))
+                                           (brb-price-format paying-for-fees)))
+                                  (list (list "Event fee" (brb-price-format fee))))
+                                ;; Orders
+                                (--map (list (alist-get 'item it)
+                                             (brb-price-format (alist-get 'total it)))
+                                       order)
+                                ;; Extra wines
+                                (--map (list (format "Extra: %s"
+                                                     (vulpea-note-title (alist-get 'wine it)))
+                                             (brb-price-format (alist-get 'total it)))
+                                       extra)
+                                ;; Orders for people we're paying for
+                                (--map (list (format "Order (others): %s" (alist-get 'item it))
+                                             (brb-price-format (alist-get 'total it)))
+                                       paying-for-orders)
+                                ;; Extras for people we're paying for
+                                (--map (list (format "Extra (others): %s"
+                                                     (vulpea-note-title (alist-get 'wine it)))
+                                             (brb-price-format (alist-get 'total it)))
+                                       paying-for-extras)
+                                ;; Separator and totals
+                                (list :separator)
+                                (list (list (vui-text "Total" :face 'bold)
+                                            (vui-text (brb-price-format total) :face 'bold)))
+                                ;; Balance info (if applicable)
+                                (when (and use-balance (not (= balance 0)))
+                                  (list
+                                   (list "Final balance" (brb-price-format balance-final))
+                                   (list (vui-text "Due" :face (if (> due 0) 'error 'success))
+                                         (vui-text (brb-price-format due)
+                                           :face (if (> due 0) 'error 'success)))))))
+                        ;; Copy button
+                        (vui-newline)
+                        (vui-button "Copy Invoice"
+                          :on-click (lambda ()
+                                      (brb-plan--copy-invoice event person st use-balance balance)))
+                        (vui-newline)
+                        (vui-newline))))))
+               #'vulpea-note-id))))
 
-;;; * Tab rendering
+(defun brb-plan--add-pays-for (actions participants payer-id current-payees)
+  "Add someone for PAYER-ID to pay for.
+ACTIONS is the actions plist. PARTICIPANTS is list of all participants.
+CURRENT-PAYEES is list of IDs already being paid for."
+  (let* ((available (--remove (or (string-equal payer-id (vulpea-note-id it))
+                                  (-contains-p current-payees (vulpea-note-id it)))
+                              participants))
+         (choice (completing-read "Pay for: "
+                                  (--map (vulpea-note-title it) available)
+                                  nil t)))
+    (when-let ((person (--find (string-equal choice (vulpea-note-title it)) available)))
+      (funcall (plist-get actions :add-pays-for) payer-id (vulpea-note-id person)))))
 
-(defun brb-plan--render-tab (state)
-  "Render current tab content for STATE."
-  (pcase (brb-plan-state-tab state)
-    ("plan" (brb-plan--render-tab-plan state))
-    ("scores" (brb-plan--render-tab-scores state))
-    ("order" (brb-plan--render-tab-order state))
-    ("extra" (brb-plan--render-tab-extra state))
-    ("invoices" (brb-plan--render-tab-invoices state))
-    (tab (widget-insert (format "Unknown tab: %s\n" tab)))))
+(defun brb-plan--copy-invoice (event person statement use-balance balance)
+  "Copy invoice for PERSON to clipboard."
+  (let* ((name (vulpea-note-title person))
+         (event-name (vulpea-note-title event))
+         (fee (alist-get 'fee statement))
+         (order (alist-get 'order statement))
+         (extra (alist-get 'extra statement))
+         (total (alist-get 'total statement))
+         (due (alist-get 'due statement))
+         (lines (list (format "Invoice for %s - %s" name event-name)
+                      "")))
+    (when (and use-balance (not (= balance 0)))
+      (push (format "Starting balance: %s" (brb-price-format balance)) lines))
+    (push (format "Event fee: %s" (brb-price-format fee)) lines)
+    (--each order
+      (push (format "Order %s: %s" (alist-get 'item it) (brb-price-format (alist-get 'total it))) lines))
+    (--each extra
+      (push (format "Extra %s: %s" (vulpea-note-title (alist-get 'wine it))
+                    (brb-price-format (alist-get 'total it))) lines))
+    (push "" lines)
+    (push (format "Total: %s" (brb-price-format total)) lines)
+    (when (and use-balance (not (= balance 0)))
+      (push (format "Due: %s" (brb-price-format due)) lines))
+    (kill-new (string-join (nreverse lines) "\n"))
+    (message "Invoice copied to clipboard")))
 
-(defun brb-plan--render-tab-plan (state)
-  "Render plan tab for STATE."
-  (brb-plan--render-zone state 'general)
-  (brb-plan--render-zone state 'forecast)
-  (brb-plan--render-zone state 'finances)
-  (brb-plan--render-zone state 'wines)
-  (brb-plan--render-zone state 'shared)
-  (brb-plan--render-zone state 'expense)
-  (brb-plan--render-zone state 'participants)
-  (brb-plan--render-zone state 'waiting))
 
-(defun brb-plan--render-tab-scores (state)
-  "Render scores tab for STATE."
-  (brb-plan--render-zone state 'scores-summary)
-  (brb-plan--render-zone state 'scores-wines)
-  (brb-plan--render-zone state 'scores-personal))
-
-(defun brb-plan--render-tab-order (state)
-  "Render order tab for STATE."
-  (brb-plan--render-zone state 'orders-summary)
-  (brb-plan--render-zone state 'orders-personal))
-
-(defun brb-plan--render-tab-extra (state)
-  "Render extra tab for STATE."
-  (brb-plan--render-zone state 'extra-wines))
-
-(defun brb-plan--render-tab-invoices (state)
-  "Render invoices tab for STATE."
-  (brb-plan--render-zone state 'invoices-actions)
-  (brb-plan--render-zone state 'invoices-settings)
-  (brb-plan--render-zone state 'invoices-personal))
-
-;;; * Display and navigation
-
-(defun brb-plan--display (state)
-  "Display UI for STATE."
-  (let ((buffer (get-buffer-create
-                 (format "*Event: %s*"
-                         (vulpea-note-title (brb-plan-state-event state))))))
-    (setf (brb-plan-state-buffer state) buffer)
-    (switch-to-buffer buffer)
-    (kill-all-local-variables)
-    (let ((inhibit-read-only t))
-      (erase-buffer))
-    (remove-overlays)
-    (setq-local brb-plan--state state)
-
-    ;; Render header (not in a zone since it's always present)
-    (brb-plan--render-zone state 'header)
-
-    ;; Render tab content
-    (brb-plan--render-tab state)
-
-    (use-local-map widget-keymap)
-    (widget-setup)
-    (goto-char (point-min))))
-
-(defun brb-plan--reload (state)
-  "Reload event data and refresh display for STATE."
-  (let ((event (vulpea-db-get-by-id
-                (vulpea-note-id (brb-plan-state-event state)))))
-    (setf (brb-plan-state-event state) event)
-    (setf (brb-plan-state-data state) (brb-event-data-read event))
-    (setf (brb-plan-state-host state) (vulpea-note-meta-get event "host" 'note))
-    (setf (brb-plan-state-participants state) (brb-event-participants event))
-    (setf (brb-plan-state-wines state) (brb-event-wines event))
-    (brb-plan--display state)))
-
-;;; * Entry point
+;;; Entry Point
 
 ;;;###autoload
 (defun brb-event-plan (&optional event)
-  "Open planning UI for EVENT.
+  "Open planning UI for EVENT using vui.el.
 
 If EVENT is nil, interactively select one."
   (interactive)
   (let* ((event (or event (brb-event-select)))
-         (state (brb-plan-state-create event)))
-    (brb-plan--display state)))
-
-;;; * Custom widgets
-
-(define-widget 'note-field 'field
-  "A field for selecting vulpea notes."
-  :format-value (lambda (_widget value)
-                  (if value (vulpea-note-title value) "__"))
-  :match (lambda (_widget value)
-           (or (null value) (vulpea-note-p value)))
-  :match-error-message (lambda (_widget _value)
-                         "Value must be a vulpea note")
-  :prompt-value (lambda (_widget prompt _value _unbound)
-                  (vulpea-select prompt)))
-
-(define-widget 'person-field 'note-field
-  "A field for selecting person notes."
-  :match (lambda (_widget value)
-           (or (null value)
-               (and (vulpea-note-p value)
-                    (seq-contains-p (vulpea-note-tags value) "people"))))
-  :match-error-message (lambda (_widget _value)
-                         "Value must be a person note")
-  :prompt-value (lambda (_widget prompt _value _unbound)
-                  (vulpea-select-from
-                   prompt
-                   (vulpea-db-query-by-tags-every '("people")))))
-
-(define-widget 'wine-field 'note-field
-  "A field for selecting wine notes."
-  :match (lambda (_widget value)
-           (or (null value)
-               (and (vulpea-note-p value)
-                    (seq-contains-p (vulpea-note-tags value) "wine"))))
-  :match-error-message (lambda (_widget _value)
-                         "Value must be a wine note")
-  :prompt-value (lambda (_widget prompt _value _unbound)
-                  (vulpea-select-from
-                   prompt
-                   (vulpea-db-query-by-tags-every '("wine")))))
+         (buffer-name (format "*Event: %s*" (vulpea-note-title event))))
+    (vui-mount (vui-component 'brb-event-plan-app :event event) buffer-name)
+    (switch-to-buffer buffer-name)))
 
 (provide 'brb-event-plan)
 ;;; brb-event-plan.el ends here

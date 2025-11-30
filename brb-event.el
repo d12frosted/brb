@@ -1,6 +1,6 @@
 ;;; brb-event.el --- Wine tasting event management -*- lexical-binding: t; -*-
 
-;; Copyright (C) 2024  Boris Buliga
+;; Copyright (C) 2024-2025  Boris Buliga
 
 ;; Author: Boris Buliga <boris@d12frosted.io>
 ;; Maintainer: Boris Buliga <boris@d12frosted.io>
@@ -203,19 +203,19 @@ structure:
     (when (file-exists-p file)
       (with-temp-buffer
         (condition-case nil
-	    (progn
-	      (insert-file-contents file)
+	          (progn
+	            (insert-file-contents file)
               (read (current-buffer)))
-	  (error
-	   (message "Could not read data from %s" file)))))))
+	        (error
+	         (message "Could not read data from %s" file)))))))
 
 (defun brb-event-data-write (event data)
   "Write DATA for EVENT."
   (let ((file (brb-event--data-file event)))
     (with-temp-file file
       (let ((print-level nil)
-	    (print-length nil))
-	(pp data (current-buffer))))))
+	          (print-length nil))
+	      (pp data (current-buffer))))))
 
 ;;; ** Statement
 
@@ -227,10 +227,12 @@ HOST is loaded unless provided.
 PARTICIPANTS are loaded unless provided.
 WINES are loaded unless provided.
 BALANCES is a hash table."
+  (declare (indent 1))
   (let* ((data (or data (brb-event-data-read event)))
          (participants (or participants (brb-event-participants event)))
          (wines (or wines (brb-event-wines event)))
          (host (or host (vulpea-note-meta-get event "host" 'note)))
+         (balances (or balances (make-hash-table :test 'equal)))
 
          ;; calculations
          ;; (price (vulpea-note-meta-get event "price" 'number))
@@ -289,7 +291,8 @@ BALANCES is a hash table."
                                                                           :data data
                                                                           :host host
                                                                           :wines wines
-                                                                          :balances balances)))
+                                                                          :balances balances
+                                                                          :participants participants)))
                           (-sum)))
          (debit-extra (->> wines-extra
                            (--map
@@ -345,7 +348,7 @@ BALANCES is a hash table."
       (total . ,total)
       (due . ,due))))
 
-(cl-defun brb-event-statement-for (event participant &key data host wines balances)
+(cl-defun brb-event-statement-for (event participant &key data host wines balances participants)
   "Prepare financial statement for PARTICIPANT of EVENT.
 
 Returns an alist with fee, orders, extra wines, and balance calculations.
@@ -353,68 +356,135 @@ Returns an alist with fee, orders, extra wines, and balance calculations.
 DATA is event data, loaded unless provided.
 HOST is a `vulpea-note', loaded unless provided.
 WINES is a list of `vulpea-note', loaded unless provided.
-BALANCES is a hash table mapping participant IDs to their balance."
+BALANCES is a hash table mapping participant IDs to their balance.
+PARTICIPANTS is list of `vulpea-note' for all participants."
   (let* ((data (or data (brb-event-data-read event)))
+         (balances (or balances (make-hash-table :test 'equal)))
          (use-balance (pcase (or (vulpea-note-meta-get event "use balance") "true")
                         ("true" t)
                         (_ nil)))
          (host (or host (vulpea-note-meta-get event "host" 'note)))
          (wines (or wines (brb-event-wines event)))
+         (participants (or participants (brb-event-participants event)))
          (host-id (when host (vulpea-note-id host)))
          (pid (vulpea-note-id participant))
          (price (or (vulpea-note-meta-get event "price" 'number) 0))
          (host-p (string-equal pid host-id))
-         (fee (if host-p
-                  0
-                (or (->> data
-                         (alist-get 'participants)
-                         (--find (string-equal pid (alist-get 'id it)))
-                         (alist-get 'fee))
-                    price)))
+         ;; pays-for is stored inside each participant entry: ((id . "X") (pays-for . ("Y" "Z")))
+         (participants-data (alist-get 'participants data))
+         ;; Check if someone else is paying for this participant
+         (paid-by (->> participants-data
+                       (--find (-contains-p (alist-get 'pays-for it) pid))
+                       (alist-get 'id)))
+         ;; Get list of people this participant pays for
+         (paying-for (->> participants-data
+                          (--find (string-equal pid (alist-get 'id it)))
+                          (alist-get 'pays-for)))
+         ;; Calculate base fee (0 if host or if someone else is paying)
+         (base-fee (cond
+                    (host-p 0)
+                    (paid-by 0)  ; Someone else is paying for this person
+                    (t (or (->> data
+                                (alist-get 'participants)
+                                (--find (string-equal pid (alist-get 'id it)))
+                                (alist-get 'fee))
+                           price))))
+         ;; Add fees for people we're paying for
+         (paying-for-fees
+          (if paying-for
+              (-sum (--map
+                     (let* ((payee-id it)
+                            (payee-fee (or (->> data
+                                                (alist-get 'participants)
+                                                (--find (string-equal payee-id (alist-get 'id it)))
+                                                (alist-get 'fee))
+                                           price)))
+                       payee-fee)
+                     paying-for))
+            0))
+         (fee (+ base-fee paying-for-fees))
          (mode (cond
                 (host-p "host")
                 ((/= fee price) "custom")
                 (t "normal")))
-         (order (->> data
-                     (alist-get 'personal)
-                     (--map
-                      (let* ((od (->> (alist-get 'orders it)
-                                      (--find (string-equal pid (alist-get 'participant it)))))
-                             (amount (or (when od (alist-get 'amount od))
-                                         0)))
-                        `((item . ,(alist-get 'item it))
-                          (price . ,(alist-get 'price it))
-                          (amount . ,amount)
-                          (total . ,(* amount (alist-get 'price it))))))
-                     (--filter (> (alist-get 'amount it) 0))))
-         (extra (->> data
-                     (alist-get 'wines)
-                     (--filter (string-equal "extra" (assoc-default 'type it)))
-                     (--filter (-contains-p (assoc-default 'participants it) pid))
-                     (--map
-                      (let* ((ps (alist-get 'participants it))
-                             (wid (alist-get 'id it))
-                             (price (or (alist-get 'price-asking it)
-                                        (alist-get 'price-public it)))
-                             (glass-price (ceiling (/ price (float (length ps)))))
-                             (wine (--find (string-equal wid (vulpea-note-id it)) wines)))
-                        `((glass-price . ,glass-price)
-                          (amount . 1)
-                          (total . ,glass-price)
-                          (wine . ,wine))))
-                     (--filter (alist-get 'wine it))))
-         (balance (if use-balance
-                      (or (gethash pid balances) 0)
-                    0))
+         ;; Helper to get orders for a participant id
+         (get-orders-for
+          (lambda (target-pid)
+            (->> data
+                 (alist-get 'personal)
+                 (--map
+                  (let* ((od (->> (alist-get 'orders it)
+                                  (--find (string-equal target-pid (alist-get 'participant it)))))
+                         (amount (or (when od (alist-get 'amount od))
+                                     0)))
+                    `((item . ,(alist-get 'item it))
+                      (price . ,(alist-get 'price it))
+                      (amount . ,amount)
+                      (total . ,(* amount (alist-get 'price it))))))
+                 (--filter (> (alist-get 'amount it) 0)))))
+         ;; Helper to get extras for a participant id
+         (get-extras-for
+          (lambda (target-pid)
+            (->> data
+                 (alist-get 'wines)
+                 (--filter (string-equal "extra" (assoc-default 'type it)))
+                 (--filter (-contains-p (assoc-default 'participants it) target-pid))
+                 (--map
+                  (let* ((ps (alist-get 'participants it))
+                         (wid (alist-get 'id it))
+                         (price (or (alist-get 'price-asking it)
+                                    (alist-get 'price-public it)))
+                         (glass-price (ceiling (/ price (float (length ps)))))
+                         (wine (--find (string-equal wid (vulpea-note-id it)) wines)))
+                    `((glass-price . ,glass-price)
+                      (amount . 1)
+                      (total . ,glass-price)
+                      (wine . ,wine))))
+                 (--filter (alist-get 'wine it)))))
+         ;; If someone is paying for this participant, they get 0 orders/extras
+         ;; Otherwise get their own orders/extras
+         (order (if paid-by nil (funcall get-orders-for pid)))
+         (extra (if paid-by nil (funcall get-extras-for pid)))
+         ;; Add orders for people we're paying for
+         (paying-for-orders
+          (if paying-for
+              (-flatten-n 1 (--map (funcall get-orders-for it) paying-for))
+            nil))
+         ;; Add extras for people we're paying for
+         (paying-for-extras
+          (if paying-for
+              (-flatten-n 1 (--map (funcall get-extras-for it) paying-for))
+            nil))
+         ;; Sum of balances for people we're paying for
+         (paying-for-balances
+          (if (and paying-for use-balance)
+              (-sum (--map (or (gethash it balances) 0) paying-for))
+            0))
+         ;; Own balance (0 if someone else is paying for us - our balance goes to them)
+         (own-balance (if use-balance
+                          (if paid-by 0 (or (gethash pid balances) 0))
+                        0))
+         ;; Total effective balance = own + those we're paying for
+         (balance (+ own-balance paying-for-balances))
          (total (+ fee
                    (-sum (--map (alist-get 'total it) order))
-                   (-sum (--map (alist-get 'glass-price it) extra))))
+                   (-sum (--map (alist-get 'glass-price it) extra))
+                   (-sum (--map (alist-get 'total it) paying-for-orders))
+                   (-sum (--map (alist-get 'glass-price it) paying-for-extras))))
          (due (max 0 (- total balance)))
          (balance-final (- balance total)))
     `((balance . ,balance)
+      (own-balance . ,own-balance)
+      (paying-for-balances . ,paying-for-balances)
       (balance-final . ,balance-final)
       (mode . ,mode)
       (fee . ,fee)
+      (base-fee . ,base-fee)
+      (paying-for . ,paying-for)
+      (paying-for-fees . ,paying-for-fees)
+      (paying-for-orders . ,paying-for-orders)
+      (paying-for-extras . ,paying-for-extras)
+      (paid-by . ,paid-by)
       (order . ,order)
       (extra . ,extra)
       (total . ,total)
@@ -498,11 +568,12 @@ Result is always a number."
 
 ;;; ** Summary
 
-(defun brb-event-summary (event)
-  "Return score summary of EVENT."
-  (let* ((data (brb-event-data-read event))
-         (wines (brb-event-wines event))
-         (participants (brb-event-participants event))
+(cl-defun brb-event-summary (event &key data wines participants)
+  "Return score summary of EVENT.
+Optional DATA, WINES, PARTICIPANTS override reading from event."
+  (let* ((data (or data (brb-event-data-read event)))
+         (wines (or wines (brb-event-wines event)))
+         (participants (or participants (brb-event-participants event)))
          (weight-def 2)
          (weights (->> participants
                        (--map
@@ -614,15 +685,15 @@ Result is always a number."
                                     (calcFunc-vmedian)
                                     (calc-to-number))))
          (rms-scores (->> wines-data
-                         (--remove (alist-get 'ignore-scores it))
-                         (--map (alist-get 'rms it))
-                         (--filter it)
-                         (-map #'calc-from-number)))
+                          (--remove (alist-get 'ignore-scores it))
+                          (--map (alist-get 'rms it))
+                          (--filter it)
+                          (-map #'calc-from-number)))
          (wavg-scores (->> wines-data
-                         (--remove (alist-get 'ignore-scores it))
-                         (--map (alist-get 'wavg it))
-                         (--filter it)
-                         (-map #'calc-from-number)))
+                           (--remove (alist-get 'ignore-scores it))
+                           (--map (alist-get 'wavg it))
+                           (--filter it)
+                           (-map #'calc-from-number)))
          (event-rms (when rms-scores
                       (->> rms-scores
                            (apply #'calcFunc-vec)
