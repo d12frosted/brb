@@ -118,32 +118,58 @@
           (participants nil)
           (waiting nil)
           (wines nil)
-          (balances nil))
+          (balance-refresh-counter 0))
 
   :on-mount
-  ;; Initialize state from event
+  ;; Initialize state from event (balances loaded async in render)
   (let* ((event-data (brb-event-data-read event))
          (event-host (vulpea-note-meta-get event "host" 'note))
          (event-participants (brb-event-participants event))
          (event-waiting (vulpea-note-meta-get-list event "waiting" 'note))
-         (event-wines (brb-event-wines event))
-         (event-date (brb-event-date-string event))
-         (event-balances (let ((tbl (make-hash-table :test 'equal)))
-                           (--each event-participants
-                             (puthash (vulpea-note-id it)
-                                      (brb-ledger-balance-of (vulpea-note-id it) event-date)
-                                      tbl))
-                           tbl)))
+         (event-wines (brb-event-wines event)))
     (vui-batch
      (vui-set-state :data event-data)
      (vui-set-state :host event-host)
      (vui-set-state :participants event-participants)
      (vui-set-state :waiting event-waiting)
-     (vui-set-state :wines event-wines)
-     (vui-set-state :balances event-balances)))
+     (vui-set-state :wines event-wines)))
 
   :render
-  (let* (;; Create action functions that update state and persist
+  (let* (;; Load balances asynchronously (include refresh counter to allow cache invalidation)
+         (balances-key (list 'balances (vulpea-note-id event)
+                             (mapcar #'vulpea-note-id participants)
+                             balance-refresh-counter))
+         (balances-async (use-async balances-key
+                           (lambda (resolve reject)
+                             (let ((tbl (make-hash-table :test 'equal))
+                                   (date (brb-event-date-string event))
+                                   (total (length participants))
+                                   (completed 0)
+                                   (failed nil))
+                               (if (= total 0)
+                                   ;; No participants - resolve immediately
+                                   (funcall resolve tbl)
+                                 ;; Load each participant's balance async
+                                 (--each participants
+                                   (let ((pid (vulpea-note-id it)))
+                                     (brb-ledger-balance-of-async
+                                      pid
+                                      (lambda (balance)
+                                        (unless failed
+                                          (puthash pid balance tbl)
+                                          (cl-incf completed)
+                                          (when (= completed total)
+                                            (funcall resolve tbl))))
+                                      (lambda (err)
+                                        (unless failed
+                                          (setq failed t)
+                                          (funcall reject err)))
+                                      date))))))))
+         ;; Extract loaded balances or use empty hash-table while loading
+         (balances (if (eq (plist-get balances-async :status) 'ready)
+                       (plist-get balances-async :data)
+                     (make-hash-table :test 'equal)))
+         ;; Create action functions that update state and persist
          (actions
           (list
            ;; Update data and save to file
@@ -310,16 +336,10 @@
                  (vulpea-buffer-meta-set "participants" new-participants 'append)
                  (save-buffer))))
 
-           ;; Refresh balances from ledger (as of event date)
+           ;; Refresh balances from ledger (invalidate cache by incrementing counter)
            :refresh-balances
            (lambda ()
-             (let* ((date (brb-event-date-string event))
-                    (new-balances (make-hash-table :test 'equal)))
-               (--each participants
-                 (puthash (vulpea-note-id it)
-                          (brb-ledger-balance-of (vulpea-note-id it) date)
-                          new-balances))
-               (vui-set-state :balances new-balances)))
+             (vui-set-state :balance-refresh-counter (1+ balance-refresh-counter)))
 
            ;; Set tab
            :set-tab

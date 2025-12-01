@@ -295,6 +295,76 @@ Result is a number in `brb-currency'."
                (string-to-number)))
          (--reduce-from (+ acc it) 0))))
 
+(cl-defun brb-ledger-balance-of-async (convive resolve reject &optional date)
+  "Asynchronously return balance of CONVIVE via RESOLVE/REJECT callbacks.
+
+Like `brb-ledger-balance-of' but non-blocking. Runs hledger in
+background processes and calls RESOLVE with the balance or REJECT
+with an error message.
+
+RESOLVE is called with a single argument: the balance number.
+REJECT is called with a single argument: an error message string.
+
+Optionally compute balance on DATE (inclusive)."
+  (let* ((id (if (vulpea-note-p convive) (vulpea-note-id convive) convive))
+         (ledger-file (brb-ledger-file--read))
+         (cmds (if date
+                   (let* ((time0 (if (stringp date) (date-to-time date) date))
+                          (time1 (time-add time0 (* 60 60 24))))
+                     (list
+                      (list "hledger" "-f" ledger-file "balance"
+                            (concat "balance:" id) "-e"
+                            (format-time-string "%Y-%m-%d" time0))
+                      (list "hledger" "-f" ledger-file "balance"
+                            (concat "balance:" id) "-b"
+                            (format-time-string "%Y-%m-%d" time0)
+                            "-e" (format-time-string "%Y-%m-%d" time1)
+                            "not:desc:charge")))
+                 (list
+                  (list "hledger" "-f" ledger-file "balance"
+                        (concat "balance:" id)))))
+         (total-cmds (length cmds))
+         (completed 0)
+         (results (make-vector total-cmds nil))
+         (failed nil))
+    (cl-loop for cmd in cmds
+             for idx from 0
+             do (let ((output-buffer (generate-new-buffer " *hledger-async*"))
+                      (cmd-idx idx))
+                  (make-process
+                   :name (format "hledger-balance-%d" idx)
+                   :command cmd
+                   :buffer output-buffer
+                   :connection-type 'pipe  ; Avoid terminal/pager issues
+                   :sentinel
+                   (lambda (proc event)
+                     ;; Only process when the process has actually finished
+                     (when (and (memq (process-status proc) '(exit signal))
+                                (not failed))
+                       (if (not (eq 0 (process-exit-status proc)))
+                           (progn
+                             (setq failed t)
+                             (when (buffer-live-p output-buffer)
+                               (kill-buffer output-buffer))
+                             (funcall reject (format "hledger failed for %s: %s" id (s-trim event))))
+                         ;; Parse result
+                         (let ((balance
+                                (when (buffer-live-p output-buffer)
+                                  (with-current-buffer output-buffer
+                                    (prog1
+                                        (->> (buffer-string)
+                                             (s-trim)
+                                             (s-lines)
+                                             (-last-item)
+                                             (string-to-number))
+                                      (kill-buffer output-buffer))))))
+                           (aset results cmd-idx (or balance 0))
+                           (cl-incf completed)
+                           ;; When all done, sum and resolve
+                           (when (= completed total-cmds)
+                             (funcall resolve
+                                      (cl-reduce #'+ results :initial-value 0))))))))))))
+
 ;;; * Various balance-changing utils
 
 (cl-defun brb-ledger-buy-wines-for (&key convive
