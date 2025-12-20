@@ -23,7 +23,7 @@ GITHUB-REPO is the GitHub repo in \"user/repo\" format."
 (brb-eldev-use-local-or-vc 'vulpea "VULPEA_PATH" "Developer/vulpea" "d12frosted/vulpea")
 (brb-eldev-use-local-or-vc 'vino "VINO_PATH" "Developer/vino" "d12frosted/vino")
 (brb-eldev-use-local-or-vc 'widget-extra "WIDGET_EXTRA_PATH" "Developer/widget-extra" "d12frosted/widget-extra")
-(brb-eldev-use-local-or-vc 'vui.el "VUI_PATH" "Developer/vui.el" "d12frosted/vui.el")
+(brb-eldev-use-local-or-vc 'vui "VUI_PATH" "Developer/vui.el" "d12frosted/vui.el")
 
 ;; Tell checkdoc not to demand two spaces after a period.
 (setq sentence-end-double-space nil)
