@@ -1311,7 +1311,8 @@ CURRENT-SCORE and CURRENT-SENTIMENT are current values."
     (funcall (plist-get actions :update-data) 'personal personal)))
 
 (defun brb-plan--order-update-qty (actions data personal item-name pid amount)
-  "Update AMOUNT for PID in item ITEM-NAME using ACTIONS."
+  "Update AMOUNT for PID in item ITEM-NAME using ACTIONS.
+DATA and PERSONAL are used to find the order entry."
   (let* ((item (--find (string= item-name (alist-get 'item it)) personal))
          (order-entry (when item
                         (--find (string= pid (alist-get 'participant it))
@@ -1385,7 +1386,8 @@ CURRENT-SCORE and CURRENT-SENTIMENT are current values."
      (vui-newline))))
 
 (defun brb-plan--extra-toggle (actions data wines-data wine-id pid)
-  "Toggle PID for extra wine WINE-ID using ACTIONS."
+  "Toggle PID for extra wine WINE-ID using ACTIONS.
+DATA and WINES-DATA provide the current state."
   (let ((wine-data (--find (string= wine-id (alist-get 'id it)) wines-data)))
     (when wine-data
       (let ((participants (alist-get 'participants wine-data)))
@@ -1437,7 +1439,8 @@ CURRENT-SCORE and CURRENT-SENTIMENT are current values."
      (vui-newline))))
 
 (defun brb-plan--charge-all (event data participants wines host balances)
-  "Record charges for all participants."
+  "Record charges for all PARTICIPANTS of EVENT.
+DATA, WINES, HOST, and BALANCES are used to compute statements."
   (let ((date (vulpea-utils-with-note event
                 (vulpea-buffer-prop-get "date"))))
     (--each participants
@@ -1457,7 +1460,8 @@ CURRENT-SCORE and CURRENT-SENTIMENT are current values."
            :comment (vulpea-note-title event)))))))
 
 (defun brb-plan--record-spendings (event data participants wines host balances)
-  "Record event spendings to ledger."
+  "Record EVENT spendings to ledger.
+DATA, PARTICIPANTS, WINES, HOST, and BALANCES are used to compute the statement."
   (let* ((statement (brb-event-statement event
                       :data data
                       :participants participants
@@ -1657,7 +1661,8 @@ CURRENT-PAYEES is list of IDs already being paid for."
       (funcall (plist-get actions :add-pays-for) payer-id (vulpea-note-id person)))))
 
 (defun brb-plan--copy-invoice (event person statement use-balance balance)
-  "Copy invoice for PERSON to clipboard."
+  "Copy invoice for PERSON at EVENT to clipboard.
+STATEMENT contains the amounts, USE-BALANCE and BALANCE control balance display."
   (let* ((name (vulpea-note-title person))
          (event-name (vulpea-note-title event))
          (fee (alist-get 'fee statement))

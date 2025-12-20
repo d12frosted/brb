@@ -123,10 +123,10 @@ Transaction is recorded into `brb-ledger-file'."
                "echo '\n%s%s%s\n    %s  %s %s\n    %s' >> '%s'"
                (format-time-string "%Y/%m/%d" date)
                (if code
-                   (concat " (" (s-replace "'" "'\\\''" code) ")")
+                   (concat " (" (s-replace "'" "'\\''" code) ")")
                  "")
                (if comment
-                   (concat " " (s-replace "'" "'\\\''" comment))
+                   (concat " " (s-replace "'" "'\\''" comment))
                  "")
                account-to
                amount
