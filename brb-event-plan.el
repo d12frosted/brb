@@ -54,35 +54,35 @@
 ;;; Contexts
 
 ;; Event context - the vulpea-note for the event
-(defcontext brb-plan-event nil
+(vui-defcontext brb-plan-event nil
   "The event vulpea-note being planned.")
 
 ;; Data context - event data from .data.el file
-(defcontext brb-plan-data nil
+(vui-defcontext brb-plan-data nil
   "Event data alist from .data.el file.")
 
 ;; Host context - the host vulpea-note
-(defcontext brb-plan-host nil
+(vui-defcontext brb-plan-host nil
   "The event host vulpea-note.")
 
 ;; Participants context - list of participant vulpea-notes
-(defcontext brb-plan-participants nil
+(vui-defcontext brb-plan-participants nil
   "List of participant vulpea-notes.")
 
 ;; Waiting list context
-(defcontext brb-plan-waiting nil
+(vui-defcontext brb-plan-waiting nil
   "List of vulpea-notes on the waiting list.")
 
 ;; Wines context - list of wine vulpea-notes
-(defcontext brb-plan-wines nil
+(vui-defcontext brb-plan-wines nil
   "List of wine vulpea-notes for the event.")
 
 ;; Balances context - hash-table of participant-id -> balance
-(defcontext brb-plan-balances nil
+(vui-defcontext brb-plan-balances nil
   "Hash-table mapping participant ID to their balance.")
 
 ;; Actions context - plist of action functions for state updates
-(defcontext brb-plan-actions nil
+(vui-defcontext brb-plan-actions nil
   "Plist of action functions for updating state and persisting changes.")
 
 ;;; Helper functions
@@ -110,7 +110,7 @@
 
 ;;; Root Component
 
-(defcomponent brb-event-plan-app (event)
+(vui-defcomponent brb-event-plan-app (event)
   :state ((event event)
           (tab "plan")
           (data nil)
@@ -139,7 +139,7 @@
          (balances-key (list 'balances (vulpea-note-id event)
                              (mapcar #'vulpea-note-id participants)
                              balance-refresh-counter))
-         (balances-async (use-async balances-key
+         (balances-async (vui-use-async balances-key
                            (lambda (resolve reject)
                              (let ((tbl (make-hash-table :test 'equal))
                                    (date (brb-event-date-string event))
@@ -369,7 +369,7 @@
 
 ;;; Header Component
 
-(defcomponent brb-plan-header (tab)
+(vui-defcomponent brb-plan-header (tab)
   :render
   (let ((event (use-brb-plan-event))
         (actions (use-brb-plan-actions)))
@@ -409,7 +409,7 @@
 
 ;;; Plan Tab Components
 
-(defcomponent brb-plan-tab-plan ()
+(vui-defcomponent brb-plan-tab-plan ()
   :render
   (vui-vstack
    (vui-component 'brb-plan-general)
@@ -423,7 +423,7 @@
 
 ;;; General Section
 
-(defcomponent brb-plan-general ()
+(vui-defcomponent brb-plan-general ()
   :render
   (let ((event (use-brb-plan-event))
         (host (use-brb-plan-host))
@@ -461,7 +461,7 @@
 
 ;;; Forecast Section
 
-(defcomponent brb-plan-forecast ()
+(vui-defcomponent brb-plan-forecast ()
   :render
   (let* ((event (use-brb-plan-event))
          (data (use-brb-plan-data))
@@ -487,7 +487,7 @@
 
 ;;; Finances Section
 
-(defcomponent brb-plan-finances ()
+(vui-defcomponent brb-plan-finances ()
   :render
   (let* ((event (use-brb-plan-event))
          (price (vulpea-note-meta-get event "price" 'number))
@@ -543,7 +543,7 @@
 
 ;;; Wines Table
 
-(defcomponent brb-plan-wines-table ()
+(vui-defcomponent brb-plan-wines-table ()
   :render
   (let* ((data (use-brb-plan-data))
          (wines (use-brb-plan-wines))
@@ -635,7 +635,7 @@
 
 ;;; Shared Spending Table
 
-(defcomponent brb-plan-shared-table ()
+(vui-defcomponent brb-plan-shared-table ()
   :render
   (let* ((data (use-brb-plan-data))
          (actions (use-brb-plan-actions))
@@ -708,7 +708,7 @@
 
 ;;; Expense Wines Table
 
-(defcomponent brb-plan-expense-wines-table ()
+(vui-defcomponent brb-plan-expense-wines-table ()
   :render
   (let* ((data (use-brb-plan-data))
          (actions (use-brb-plan-actions))
@@ -781,7 +781,7 @@
 
 ;;; Participants Table
 
-(defcomponent brb-plan-participants-table ()
+(vui-defcomponent brb-plan-participants-table ()
   :render
   (let* ((event (use-brb-plan-event))
          (data (use-brb-plan-data))
@@ -860,7 +860,7 @@
 
 ;;; Waiting List
 
-(defcomponent brb-plan-waiting-list ()
+(vui-defcomponent brb-plan-waiting-list ()
   :render
   (let ((waiting (use-brb-plan-waiting))
         (actions (use-brb-plan-actions)))
@@ -896,7 +896,7 @@
 
 ;;; Scores Tab Components
 
-(defcomponent brb-plan-tab-scores ()
+(vui-defcomponent brb-plan-tab-scores ()
   :render
   (vui-vstack
    (vui-component 'brb-plan-scores-summary)
@@ -906,7 +906,7 @@
 
 ;;; Scores Summary
 
-(defcomponent brb-plan-scores-summary ()
+(vui-defcomponent brb-plan-scores-summary ()
   :render
   (let* ((event (use-brb-plan-event))
          (data (use-brb-plan-data))
@@ -952,7 +952,7 @@
         (setq prev-wavg wavg)))
     places))
 
-(defcomponent brb-plan-wines-ranking-table ()
+(vui-defcomponent brb-plan-wines-ranking-table ()
   :render
   (let* ((event (use-brb-plan-event))
          (data (use-brb-plan-data))
@@ -1029,7 +1029,7 @@
 
 ;;; Personal Scores Matrix
 
-(defcomponent brb-plan-scores-matrix ()
+(vui-defcomponent brb-plan-scores-matrix ()
   :render
   (let* ((data (use-brb-plan-data))
          (participants (use-brb-plan-participants))
@@ -1134,7 +1134,7 @@ CURRENT-SCORE and CURRENT-SENTIMENT are current values."
 
 ;;; Order Tab Components
 
-(defcomponent brb-plan-tab-order ()
+(vui-defcomponent brb-plan-tab-order ()
   :render
   (vui-vstack
    (vui-component 'brb-plan-order-summary)
@@ -1143,7 +1143,7 @@ CURRENT-SCORE and CURRENT-SENTIMENT are current values."
 
 ;;; Order Summary
 
-(defcomponent brb-plan-order-summary ()
+(vui-defcomponent brb-plan-order-summary ()
   :render
   (let* ((data (use-brb-plan-data))
          (participants (use-brb-plan-participants))
@@ -1209,7 +1209,7 @@ CURRENT-SCORE and CURRENT-SENTIMENT are current values."
 
 ;;; Per-Participant Orders
 
-(defcomponent brb-plan-order-personal ()
+(vui-defcomponent brb-plan-order-personal ()
   :render
   (let* ((data (use-brb-plan-data))
          (participants (use-brb-plan-participants))
@@ -1324,7 +1324,7 @@ DATA and PERSONAL are used to find the order entry."
 
 ;;; Extra Tab Components
 
-(defcomponent brb-plan-tab-extra ()
+(vui-defcomponent brb-plan-tab-extra ()
   :render
   (let* ((data (use-brb-plan-data))
          (wines (use-brb-plan-wines))
@@ -1401,7 +1401,7 @@ DATA and WINES-DATA provide the current state."
 
 ;;; Invoices Tab Components
 
-(defcomponent brb-plan-tab-invoices ()
+(vui-defcomponent brb-plan-tab-invoices ()
   :render
   (vui-vstack
    (vui-component 'brb-plan-invoice-actions)
@@ -1411,7 +1411,7 @@ DATA and WINES-DATA provide the current state."
 
 ;;; Invoice Actions
 
-(defcomponent brb-plan-invoice-actions ()
+(vui-defcomponent brb-plan-invoice-actions ()
   :render
   (let ((actions (use-brb-plan-actions))
         (event (use-brb-plan-event))
@@ -1506,7 +1506,7 @@ DATA, PARTICIPANTS, WINES, HOST, and BALANCES are used to compute the statement.
 
 ;;; Invoice Settings
 
-(defcomponent brb-plan-invoice-settings ()
+(vui-defcomponent brb-plan-invoice-settings ()
   :render
   (let* ((event (use-brb-plan-event))
          (actions (use-brb-plan-actions))
@@ -1532,7 +1532,7 @@ DATA, PARTICIPANTS, WINES, HOST, and BALANCES are used to compute the statement.
 
 ;;; Per-Participant Invoices
 
-(defcomponent brb-plan-invoices-personal ()
+(vui-defcomponent brb-plan-invoices-personal ()
   :render
   (let* ((event (use-brb-plan-event))
          (data (use-brb-plan-data))
