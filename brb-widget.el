@@ -1,6 +1,6 @@
 ;;; brb-widget.el --- Custom widgets for brb UIs -*- lexical-binding: t; -*-
 
-;; Copyright (C) 2024-2025  Boris Buliga
+;; Copyright (C) 2024-2026  Boris Buliga
 
 ;; Author: Boris Buliga <boris@d12frosted.io>
 ;; Maintainer: Boris Buliga <boris@d12frosted.io>
