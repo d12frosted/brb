@@ -65,13 +65,14 @@ If visiting an event buffer, uses this event as initial prompt."
                               (note (vulpea-db-get-by-id id)))
                     (when (--every-p (-contains-p (vulpea-note-tags note) it) brb-event-tags)
                       note)))))
-    (vulpea-select-from
-     "Event"
-     (--filter
-      (= 0 (vulpea-note-level it))
-      (vulpea-db-query-by-tags-every brb-event-tags))
-     :require-match t
-     :initial-prompt (when event (vulpea-note-title event)))))
+    (if event event
+      (vulpea-select-from
+       "Event"
+       (--filter
+        (= 0 (vulpea-note-level it))
+        (vulpea-db-query-by-tags-every brb-event-tags))
+       :require-match t
+       :initial-prompt (when event (vulpea-note-title event))))))
 
 (defun brb-events-from-range (from to)
   "Return list of events in a time range denoted by FROM and TO."
