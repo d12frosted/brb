@@ -145,8 +145,7 @@ with predefined structure for event management."
               ""
               "* Notes                                                            :noexport:")
             "\n")
-     :body "- publish :: false\n- time to book :: N/A\n"
-     :immediate-finish t)))
+     :body "- publish :: false\n- time to book :: N/A\n")))
 
 ;;; * Wines
 
