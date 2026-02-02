@@ -1,3 +1,7 @@
+<p align="center">
+  <a href="https://github.com/sponsors/d12frosted"><img alt="Sponsor" src="https://img.shields.io/badge/Sponsor-d12frosted-pink?logo=githubsponsors&logoColor=white"/></a>
+</p>
+
 # Barberry Garden
 
 A set of Emacs utilities for managing wine tasting events, tracking balances with participants, and publishing reviews. Built on top of [vulpea](https://github.com/d12frosted/vulpea) and [vino](https://github.com/d12frosted/vino).
@@ -105,3 +109,7 @@ make lint
 # test
 make test
 ```
+
+## Support
+
+If you enjoy this project, you can support its development via [GitHub Sponsors](https://github.com/sponsors/d12frosted) or [Patreon](https://www.patreon.com/d12frosted).
