@@ -205,5 +205,79 @@
     ;; Should be equal (or very close due to floating point)
     (should (< (abs (- qpr-750 qpr-375)) 0.01))))
 
+;;; * Time frames
+
+(ert-deftest brb-test-time-frames-is-list ()
+  "Test that brb-time-frames is a non-empty list of symbols."
+  (should (listp brb-time-frames))
+  (should (> (length brb-time-frames) 0))
+  (should (--every-p (symbolp it) brb-time-frames)))
+
+(ert-deftest brb-test-time-frames-contains-expected ()
+  "Test that brb-time-frames contains expected values."
+  (should (memq 'this-year brb-time-frames))
+  (should (memq 'this-year-full brb-time-frames))
+  (should (memq 'this-month brb-time-frames))
+  (should (memq 'this-week brb-time-frames))
+  (should (memq 'today brb-time-frames))
+  (should (memq 'eternity brb-time-frames)))
+
+(ert-deftest brb-test-time-frame-range-returns-list-of-two ()
+  "Test that brb-time-frame-range returns a list of two date strings."
+  (let ((range (brb-time-frame-range 'this-year-full)))
+    (should (listp range))
+    (should (= (length range) 2))
+    (should (stringp (nth 0 range)))
+    (should (stringp (nth 1 range)))))
+
+(ert-deftest brb-test-time-frame-range-this-year-full ()
+  "Test that this-year-full range spans Jan 1 to next Jan 1."
+  (let ((range (brb-time-frame-range 'this-year-full)))
+    (should (string-match-p "-01-01$" (nth 0 range)))
+    (should (string-match-p "-01-01$" (nth 1 range)))))
+
+(ert-deftest brb-test-time-frame-range-from-before-to ()
+  "Test that from date is before to date."
+  (dolist (frame '(this-year this-year-full this-month this-week 365-days 30-days 7-days))
+    (let ((range (brb-time-frame-range frame)))
+      (should (string< (nth 0 range) (nth 1 range))))))
+
+(ert-deftest brb-test-time-frame-range-unknown-signals-error ()
+  "Test that unknown frame signals error."
+  (should-error (brb-time-frame-range 'unknown-frame)))
+
+;;; * Count unique
+
+(ert-deftest brb-test-count-unique-basic ()
+  "Test basic counting of unique elements."
+  (let ((result (brb-count-unique '("a" "b" "a" "c" "b" "a"))))
+    (should (= (alist-get "a" result nil nil #'equal) 3))
+    (should (= (alist-get "b" result nil nil #'equal) 2))
+    (should (= (alist-get "c" result nil nil #'equal) 1))))
+
+(ert-deftest brb-test-count-unique-empty ()
+  "Test counting unique elements of empty list."
+  (should (null (brb-count-unique nil))))
+
+(ert-deftest brb-test-count-unique-single ()
+  "Test counting unique elements of single-element list."
+  (let ((result (brb-count-unique '("x"))))
+    (should (= (length result) 1))
+    (should (= (alist-get "x" result nil nil #'equal) 1))))
+
+(ert-deftest brb-test-count-unique-all-same ()
+  "Test counting when all elements are the same."
+  (let ((result (brb-count-unique '("a" "a" "a"))))
+    (should (= (length result) 1))
+    (should (= (alist-get "a" result nil nil #'equal) 3))))
+
+(ert-deftest brb-test-count-unique-all-different ()
+  "Test counting when all elements are different."
+  (let ((result (brb-count-unique '("a" "b" "c"))))
+    (should (= (length result) 3))
+    (should (= (alist-get "a" result nil nil #'equal) 1))
+    (should (= (alist-get "b" result nil nil #'equal) 1))
+    (should (= (alist-get "c" result nil nil #'equal) 1))))
+
 (provide 'brb-test)
 ;;; brb-test.el ends here
