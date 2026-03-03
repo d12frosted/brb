@@ -1420,12 +1420,14 @@ DATA and PERSONAL are used to find the order entry."
 DATA and WINES-DATA provide the current state."
   (let ((wine-data (--find (string= wine-id (alist-get 'id it)) wines-data)))
     (when wine-data
-      (let ((participants (alist-get 'participants wine-data)))
-        (if (member pid participants)
-            (setf (alist-get 'participants wine-data)
-                  (--remove (string= it pid) participants))
-          (setf (alist-get 'participants wine-data)
-                (cons pid participants))))
+      (let* ((participants (alist-get 'participants wine-data))
+             (new-participants (if (member pid participants)
+                                   (--remove (string= it pid) participants)
+                                 (cons pid participants)))
+             (cell (assq 'participants wine-data)))
+        (if cell
+            (setcdr cell new-participants)
+          (nconc wine-data (list (cons 'participants new-participants)))))
       (funcall (plist-get actions :update-data) 'wines wines-data))))
 
 
