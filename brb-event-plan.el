@@ -187,7 +187,13 @@
                     (wines-data (alist-get 'wines new-data))
                     (wine-data (--find (string-equal wine-id (alist-get 'id it)) wines-data)))
                (if wine-data
-                   (setf (alist-get key wine-data) value)
+                   ;; Use in-place mutation to ensure wines-data sees the
+                   ;; change, since setf on alist-get with a missing key
+                   ;; only modifies the local variable binding.
+                   (let ((cell (assq key wine-data)))
+                     (if cell
+                         (setcdr cell value)
+                       (nconc wine-data (list (cons key value)))))
                  ;; Create new entry
                  (push `((id . ,wine-id) (,key . ,value)) wines-data)
                  (setf (alist-get 'wines new-data) wines-data))
@@ -1108,7 +1114,13 @@ CURRENT-SCORE and CURRENT-SENTIMENT are current values."
           (if score-data
               (setf (alist-get 'score score-data) score)
             (push `((participant . ,participant-id) (score . ,score) (sentiment . nil)) scores)
-            (setf (alist-get 'scores wine-data) scores)))
+            ;; Use in-place mutation to ensure wines-data sees the change,
+            ;; since setf on alist-get with a missing key only modifies the
+            ;; local variable binding.
+            (let ((cell (assq 'scores wine-data)))
+              (if cell
+                  (setcdr cell scores)
+                (nconc wine-data (list (cons 'scores scores)))))))
       (push `((id . ,wine-id)
               (scores . (((participant . ,participant-id) (score . ,score) (sentiment . nil)))))
             wines-data))
@@ -1125,7 +1137,10 @@ CURRENT-SCORE and CURRENT-SENTIMENT are current values."
           (if score-data
               (setf (alist-get 'sentiment score-data) sentiment)
             (push `((participant . ,participant-id) (score . nil) (sentiment . ,sentiment)) scores)
-            (setf (alist-get 'scores wine-data) scores)))
+            (let ((cell (assq 'scores wine-data)))
+              (if cell
+                  (setcdr cell scores)
+                (nconc wine-data (list (cons 'scores scores)))))))
       (push `((id . ,wine-id)
               (scores . (((participant . ,participant-id) (score . nil) (sentiment . ,sentiment)))))
             wines-data))
