@@ -1194,7 +1194,11 @@ CURRENT-SCORE and CURRENT-SENTIMENT are current values."
                                      (funcall (plist-get actions :update-data)
                                               'personal new-personal))))
                      item-name
-                     (brb-price-format price)
+                     (vui-button (brb-price-format price)
+                       :on-click (lambda ()
+                                   (let ((new-price (read-number "Price: " price)))
+                                     (brb-plan--order-update-price
+                                      actions personal item-name new-price))))
                      (number-to-string total-qty)
                      (brb-price-format total-price)
                      participant-names))
@@ -1261,7 +1265,11 @@ CURRENT-SCORE and CURRENT-SENTIMENT are current values."
                                                 (brb-plan--order-remove-participant
                                                  actions data personal item-name pid)))
                                   item-name
-                                  (brb-price-format price)
+                                  (vui-button (brb-price-format price)
+                                    :on-click (lambda ()
+                                                (let ((new-price (read-number "Price: " price)))
+                                                  (brb-plan--order-update-price
+                                                   actions personal item-name new-price))))
                                   (vui-button (format "%d" amount)
                                     :on-click (lambda ()
                                                 (let ((new-amount (read-number "Amount: " amount)))
@@ -1319,6 +1327,13 @@ DATA and PERSONAL are used to find the order entry."
                                 (alist-get 'orders item)))))
     (when order-entry
       (setf (alist-get 'amount order-entry) amount)
+      (funcall (plist-get actions :update-data) 'personal personal))))
+
+(defun brb-plan--order-update-price (actions personal item-name price)
+  "Update PRICE for item ITEM-NAME using ACTIONS and PERSONAL."
+  (let ((item (--find (string= item-name (alist-get 'item it)) personal)))
+    (when item
+      (setf (alist-get 'price item) price)
       (funcall (plist-get actions :update-data) 'personal personal))))
 
 
