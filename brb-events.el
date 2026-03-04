@@ -182,10 +182,22 @@
          (actions (use-brb-events-actions))
          (reload-fn (plist-get actions :reload-events))
          (today (format-time-string "%F" (current-time)))
+         (memo-key (mapcar #'vulpea-note-id events))
+         (statement-tbl (vui-use-memo (memo-key)
+                          (let ((tbl (make-hash-table :test 'equal)))
+                            (--each events
+                              (puthash (vulpea-note-id it)
+                                       (brb-event-statement it
+                                         :balances (make-hash-table))
+                                       tbl))
+                            tbl)))
          (render-event
-          (lambda (event)
+          (lambda (event &optional show-gain)
             (let* ((wines (brb-event-wines event))
-                   (date (brb-event-date-string event)))
+                   (date (brb-event-date-string event))
+                   (gain (when show-gain
+                           (alist-get 'balance-real
+                                      (gethash (vulpea-note-id event) statement-tbl)))))
               (list
                (vui-button (or date "-")
                  :on-click (lambda ()
@@ -212,7 +224,9 @@
                              (brb-events--set-host event reload-fn)))
                (number-to-string (seq-length (brb-event-participants event)))
                (number-to-string (seq-length wines))
-               (brb-price-format (vulpea-note-meta-get event "price" 'number))))))
+               (brb-price-format (vulpea-note-meta-get event "price" 'number))
+               (if gain (brb-price-format gain) "")))))
+
          (splitted (--split-with
                     (let ((date (brb-event-date-string it)))
                       (and date (string< date today)))
@@ -225,15 +239,22 @@
          (total-wines (--reduce-from
                        (+ acc (seq-length (brb-event-wines it)))
                        0 events))
+         (total-gain (->> events-past
+                          (--reduce-from
+                           (+ acc (or (alist-get 'balance-real
+                                                 (gethash (vulpea-note-id it) statement-tbl))
+                                      0))
+                           0)))
          (table-rows (-concat
-                      (-map render-event events-past)
+                      (--map (funcall render-event it t) events-past)
                       (when (and events-past events-future) '(:separator))
-                      (-map render-event events-future)
+                      (--map (funcall render-event it nil) events-future)
                       '(:separator)
                       (list (list "" "" "" "" "" ""
                                   (number-to-string total-participants)
                                   (number-to-string total-wines)
-                                  "")))))
+                                  ""
+                                  (brb-price-format total-gain))))))
     (vui-vstack
      (vui-hstack
       (vui-text (format "Events (%d) " (seq-length events)) :face 'org-level-2)
@@ -251,7 +272,8 @@
                  (:header "host" :min-width 10)
                  (:header "folks" :min-width 5 :align :right)
                  (:header "wines" :min-width 5 :align :right)
-                 (:header "price" :min-width 10 :align :right))
+                 (:header "price" :min-width 10 :align :right)
+                 (:header "gain" :min-width 10 :align :right))
       :rows table-rows
       :border :ascii)
      (vui-newline))))
