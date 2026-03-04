@@ -221,7 +221,7 @@
          :columns '((:header "date" :min-width 10)
                     (:header "" :min-width 3)
                     (:header "" :min-width 3)
-                    (:header "event" :width 30)
+                    (:header "event" :width 30 :truncate t)
                     (:header "gain" :min-width 10 :align :right))
          :rows (append
                 (--map
@@ -252,7 +252,7 @@
          :columns '((:header "date" :min-width 10)
                     (:header "" :min-width 3)
                     (:header "" :min-width 3)
-                    (:header "event" :width 30)
+                    (:header "event" :width 30 :truncate t)
                     (:header "location" :min-width 10)
                     (:header "host" :min-width 10)
                     (:header "folks" :min-width 5 :align :right)
@@ -298,7 +298,7 @@
         (vui-table
          :columns '((:header "" :min-width 3)
                     (:header "" :min-width 3)
-                    (:header "event" :width 30)
+                    (:header "event" :width 30 :truncate t)
                     (:header "location" :min-width 10)
                     (:header "host" :min-width 10))
          :rows (--map
@@ -410,7 +410,7 @@
      (vui-newline)
      (vui-table
       :columns '((:header "date" :min-width 10)
-                 (:header "event" :width 30)
+                 (:header "event" :width 30 :truncate t)
                  (:header "folks" :min-width 5 :align :right)
                  (:header "wines" :min-width 5 :align :right)
                  (:header "wavg" :min-width 6 :align :right)
@@ -553,9 +553,9 @@
      (vui-newline)
      (vui-table
       :columns '((:header "date" :min-width 10)
-                 (:header "event" :width 16)
-                 (:header "producer" :width 18)
-                 (:header "wine" :width 20)
+                 (:header "event" :width 16 :truncate t)
+                 (:header "producer" :width 18 :truncate t)
+                 (:header "wine" :width 20 :truncate t)
                  (:header "year" :min-width 4)
                  (:header "wavg" :min-width 6 :align :right)
                  (:header "sdev" :min-width 6 :align :right)
