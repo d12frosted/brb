@@ -96,7 +96,8 @@
 (vui-defcomponent brb-events-app (frame range)
   :state ((events-all nil)
           (filter "internal")
-          (tab "overview"))
+          (tab "overview")
+          (participant-filter nil))
 
   :on-mount
   (let ((events (-concat (apply #'brb-events-from-range range)
@@ -104,15 +105,21 @@
     (vui-set-state :events-all events))
 
   :render
-  (let* ((filtered (pcase filter
-                     ("all" events-all)
-                     ("internal" (--filter
-                                  (not (vulpea-note-tagged-all-p it "external"))
-                                  events-all))
-                     ("external" (--filter
-                                  (vulpea-note-tagged-all-p it "external")
-                                  events-all))
-                     (_ events-all)))
+  (let* ((type-filtered (pcase filter
+                          ("all" events-all)
+                          ("internal" (--filter
+                                       (not (vulpea-note-tagged-all-p it "external"))
+                                       events-all))
+                          ("external" (--filter
+                                       (vulpea-note-tagged-all-p it "external")
+                                       events-all))
+                          (_ events-all)))
+         (filtered (if participant-filter
+                       (--filter (--any-p (string-equal (vulpea-note-id it)
+                                                        (vulpea-note-id participant-filter))
+                                          (brb-event-participants it))
+                                 type-filtered)
+                     type-filtered))
          (actions
           (list
            :set-tab
@@ -122,6 +129,10 @@
            :set-filter
            (lambda (new-filter)
              (vui-set-state :filter new-filter))
+
+           :set-participant-filter
+           (lambda (person)
+             (vui-set-state :participant-filter person))
 
            :reload-events
            (lambda ()
@@ -133,7 +144,8 @@
       (brb-events-actions-provider actions
         (vui-vstack
          (vui-component 'brb-events-header
-           :tab tab :filter filter :range range)
+           :tab tab :filter filter :range range
+           :participant-filter participant-filter)
          (pcase tab
            ("overview" (vui-component 'brb-events-tab-overview))
            ("stats" (vui-component 'brb-events-tab-stats))
@@ -142,7 +154,7 @@
 
 ;;; Header Component
 
-(vui-defcomponent brb-events-header (tab filter range)
+(vui-defcomponent brb-events-header (tab filter range participant-filter)
   :render
   (let ((actions (use-brb-events-actions)))
     (vui-vstack
@@ -161,6 +173,12 @@
       (vui-button (if (string= filter "external") "*external*" "external")
         :face (when (string= filter "external") 'bold)
         :on-click (lambda () (funcall (plist-get actions :set-filter) "external"))))
+     (when participant-filter
+       (vui-hstack
+        :spacing 1
+        (vui-text (format "Participant: %s" (vulpea-note-title participant-filter)))
+        (vui-button "clear"
+          :on-click (lambda () (funcall (plist-get actions :set-participant-filter) nil)))))
      (vui-newline)
      ;; Tab buttons
      (vui-hstack
@@ -475,7 +493,8 @@
 
 (vui-defcomponent brb-events-stats-participants (events)
   :render
-  (let* ((today (format-time-string "%F" (current-time)))
+  (let* ((actions (use-brb-events-actions))
+         (today (format-time-string "%F" (current-time)))
          (events-past (--filter (string> today (brb-event-date-string it)) events))
          (participants-past (->> events-past
                                  (--map (brb-event-participants it))
@@ -504,7 +523,8 @@
                                                             (vulpea-note-id other)))
                                             participants-past)))
                     (list (vui-button (vulpea-note-title it)
-                            :on-click (lambda () (vulpea-visit it)))
+                            :on-click (lambda ()
+                                        (funcall (plist-get actions :set-participant-filter) it)))
                           (cond
                            ((>= past-count 5) (vui-text "loyal" :face 'success))
                            ((>= past-count 3) (vui-text "regular" :face 'warning))
