@@ -1696,27 +1696,99 @@ CURRENT-PAYEES is list of IDs already being paid for."
 (defun brb-plan--copy-invoice (event person statement use-balance balance)
   "Copy invoice for PERSON at EVENT to clipboard.
 STATEMENT contains the amounts, USE-BALANCE and BALANCE control balance display."
-  (let* ((name (vulpea-note-title person))
-         (event-name (vulpea-note-title event))
+  (let* ((event-name (vulpea-note-title event))
          (fee (alist-get 'fee statement))
+         (base-fee (alist-get 'base-fee statement))
+         (paying-for (alist-get 'paying-for statement))
+         (paying-for-fees (alist-get 'paying-for-fees statement))
          (order (alist-get 'order statement))
          (extra (alist-get 'extra statement))
+         (paying-for-orders (alist-get 'paying-for-orders statement))
+         (paying-for-extras (alist-get 'paying-for-extras statement))
          (total (alist-get 'total statement))
          (due (alist-get 'due statement))
-         (lines (list (format "Invoice for %s - %s" name event-name)
-                      "")))
+         (pay-url (vulpea-note-meta-get event "pay url" 'link))
+         (lines nil))
+    ;; Greeting
+    (push (format "\U0001F44B Thank you for participating in %s!" event-name) lines)
+    (push "" lines)
+    ;; Event page link
+    (when-let* ((slug (vulpea-utils-with-note event
+                        (vulpea-buffer-prop-get "slug")))
+                (date (brb-event-date-string event))
+                (post-url (format "https://barberry.io/posts/%s-%s.html" date slug)))
+      (push (format "\U0001F4CB Tasted wines and winners on Barberry Garden - %s" post-url) lines)
+      (push "" lines))
+    ;; Receipt header
+    (push "\U0001F9FE Your receipt:" lines)
+    (push "" lines)
+    ;; Starting balance
     (when (and use-balance (not (= balance 0)))
-      (push (format "Starting balance: %s" (brb-price-format balance)) lines))
-    (push (format "Event fee: %s" (brb-price-format fee)) lines)
+      (push (format "- Starting balance: %s" (brb-price-format balance)) lines))
+    ;; Event fee
+    (if (and paying-for (> paying-for-fees 0))
+        (progn
+          (push (format "- Event fee (self): %s" (brb-price-format base-fee)) lines)
+          (push (format "- Event fee (%d others): %s"
+                        (length paying-for) (brb-price-format paying-for-fees))
+                lines))
+      (push (format "- Event fee: %s" (brb-price-format fee)) lines))
+    ;; Orders
     (--each order
-      (push (format "Order %s: %s" (alist-get 'item it) (brb-price-format (alist-get 'total it))) lines))
+      (let* ((amount (alist-get 'amount it))
+             (item (alist-get 'item it)))
+        (push (format "- %s: %s"
+                      (if (> amount 1) (format "%s (x%d)" item amount) item)
+                      (brb-price-format (alist-get 'total it)))
+              lines)))
+    ;; Extras
     (--each extra
-      (push (format "Extra %s: %s" (vulpea-note-title (alist-get 'wine it))
-                    (brb-price-format (alist-get 'total it))) lines))
+      (push (format "- Extra %s: %s"
+                    (vulpea-note-title (alist-get 'wine it))
+                    (brb-price-format (alist-get 'total it)))
+            lines))
+    ;; Paying-for orders
+    (--each paying-for-orders
+      (let* ((amount (alist-get 'amount it))
+             (item (alist-get 'item it)))
+        (push (format "- %s: %s"
+                      (if (> amount 1)
+                          (format "%s (others, x%d)" item amount)
+                        (format "%s (others)" item))
+                      (brb-price-format (alist-get 'total it)))
+              lines)))
+    ;; Paying-for extras
+    (--each paying-for-extras
+      (push (format "- Extra %s (others): %s"
+                    (vulpea-note-title (alist-get 'wine it))
+                    (brb-price-format (alist-get 'total it)))
+            lines))
+    ;; Total
     (push "" lines)
     (push (format "Total: %s" (brb-price-format total)) lines)
+    ;; Due (when balance is used and non-zero)
     (when (and use-balance (not (= balance 0)))
       (push (format "Due: %s" (brb-price-format due)) lines))
+    ;; Payment info (only when there's something to pay)
+    (when (> due 0)
+      (let* ((host (vulpea-note-meta-get event "host" 'note))
+             (cc-mono (when host (vulpea-note-meta-get host "cc mono")))
+             (cc-ukrsib (when host (vulpea-note-meta-get host "cc ukrsib"))))
+        (push "" lines)
+        (when pay-url
+          (push (format "\U0001F4B8 %s" pay-url) lines))
+        (when cc-mono
+          (push (format "\U0001F4B3 mono: %s" cc-mono) lines))
+        (when cc-ukrsib
+          (push (format "\U0001F4B3 ukrsib: %s" cc-ukrsib) lines))))
+    ;; Closing
+    (push "" lines)
+    (push "\U0001F64C Cheers! See you next time!" lines)
+    ;; Personal page
+    (let ((convive-url (format "https://barberry.io/convives/%s" (vulpea-note-id person))))
+      (push "" lines)
+      (push (format "P.S. Your personal page: %s" convive-url) lines))
+    ;; Copy to clipboard
     (kill-new (string-join (nreverse lines) "\n"))
     (message "Invoice copied to clipboard")))
 
