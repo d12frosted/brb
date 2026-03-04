@@ -1705,7 +1705,8 @@ DATA, PARTICIPANTS, WINES, HOST, and BALANCES are used to compute the statement.
                         (vui-newline)
                         (vui-button "Copy Invoice"
                           :on-click (lambda ()
-                                      (brb-plan--copy-invoice event person st use-balance balance)))
+                                      (brb-plan--copy-invoice event person st use-balance balance
+                                                              data wines balances host)))
                         (vui-newline)
                         (vui-newline))))))
                #'vulpea-note-id))))
@@ -1723,9 +1724,11 @@ CURRENT-PAYEES is list of IDs already being paid for."
     (when-let ((person (--find (string-equal choice (vulpea-note-title it)) available)))
       (funcall (plist-get actions :add-pays-for) payer-id (vulpea-note-id person)))))
 
-(defun brb-plan--copy-invoice (event person statement use-balance balance)
+(defun brb-plan--copy-invoice (event person statement use-balance balance
+                                     &optional data wines balances host)
   "Copy invoice for PERSON at EVENT to clipboard.
-STATEMENT contains the amounts, USE-BALANCE and BALANCE control balance display."
+STATEMENT contains the amounts, USE-BALANCE and BALANCE control balance display.
+DATA, WINES, BALANCES, and HOST are used for per-payee balance breakdown."
   (let* ((event-name (vulpea-note-title event))
          (fee (alist-get 'fee statement))
          (base-fee (alist-get 'base-fee statement))
@@ -1754,7 +1757,25 @@ STATEMENT contains the amounts, USE-BALANCE and BALANCE control balance display.
     (push "" lines)
     ;; Starting balance
     (when (and use-balance (not (= balance 0)))
-      (push (format "- Starting balance: %s" (brb-price-format balance)) lines))
+      (let ((own-balance (alist-get 'own-balance statement)))
+        (if (and paying-for balances)
+            ;; Show breakdown: own balance + per-payee transfers
+            (let ((host-id (when host (vulpea-note-id host))))
+              (when (and own-balance (> own-balance 0))
+                (push (format "- Starting balance: %s" (brb-price-format own-balance)) lines))
+              (dolist (payee-id paying-for)
+                (let* ((payee-bal (or (gethash payee-id balances) 0))
+                       (payee-portion (brb-event--participant-portion
+                                       event payee-id data wines host-id))
+                       (transfer (min payee-bal payee-portion)))
+                  (when (> transfer 0)
+                    (let ((payee (vulpea-db-get-by-id payee-id)))
+                      (push (format "- Balance from %s: %s"
+                                    (if payee (vulpea-note-title payee) payee-id)
+                                    (brb-price-format transfer))
+                            lines))))))
+          ;; No payees or no balances data, show combined
+          (push (format "- Starting balance: %s" (brb-price-format balance)) lines))))
     ;; Event fee
     (if (and paying-for (> paying-for-fees 0))
         (progn
