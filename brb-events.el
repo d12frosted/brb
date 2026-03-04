@@ -376,22 +376,39 @@
   :render
   (let* ((today (format-time-string "%F" (current-time)))
          (events-past (--filter (string> today (brb-event-date-string it)) events))
-         (lines (--map
-                 (let* ((summary (gethash (vulpea-note-id it) summary-tbl))
-                        (date (brb-event-date-string it)))
-                   (list (or date "-")
-                         (vui-button (vulpea-note-title it)
-                           :on-click (lambda () (vulpea-visit it)))
-                         (number-to-string (seq-length (brb-event-participants it)))
-                         (number-to-string (seq-length (brb-event-wines it)))
-                         (if-let* ((wavg (alist-get 'wavg summary)))
-                             (format "%.4f" wavg)
-                           "-")
-                         (brb-price-format (vulpea-note-meta-get it "price" 'number))
-                         (if-let* ((qpr (alist-get 'qpr summary)))
-                             (format "%.4f" qpr)
-                           "-")))
-                 events))
+         ;; Compute wavg trend (compare to previous event)
+         (past-wavgs (--map (alist-get 'wavg (gethash (vulpea-note-id it) summary-tbl))
+                            events-past))
+         (lines (let ((idx 0))
+                  (--map
+                   (let* ((summary (gethash (vulpea-note-id it) summary-tbl))
+                          (date (brb-event-date-string it))
+                          (wavg (alist-get 'wavg summary))
+                          (past-p (and date (string< date today)))
+                          (trend (when (and past-p wavg)
+                                   (let ((prev-wavg (and (> idx 0)
+                                                         (nth (1- idx) past-wavgs))))
+                                     (prog1
+                                         (cond
+                                          ((null prev-wavg) "")
+                                          ((> wavg (+ prev-wavg 0.05))
+                                           (vui-text "\u2191" :face 'success))
+                                          ((< wavg (- prev-wavg 0.05))
+                                           (vui-text "\u2193" :face 'error))
+                                          (t "\u2192"))
+                                       (cl-incf idx))))))
+                     (list (or date "-")
+                           (vui-button (vulpea-note-title it)
+                             :on-click (lambda () (vulpea-visit it)))
+                           (number-to-string (seq-length (brb-event-participants it)))
+                           (number-to-string (seq-length (brb-event-wines it)))
+                           (if wavg (format "%.4f" wavg) "-")
+                           (or trend "")
+                           (brb-price-format (vulpea-note-meta-get it "price" 'number))
+                           (if-let* ((qpr (alist-get 'qpr summary)))
+                               (format "%.4f" qpr)
+                             "-")))
+                   events)))
          (splitted (--split-with (string< (nth 0 it) today) lines))
          (total-participants (--reduce-from
                               (+ acc (seq-length (brb-event-participants it)))
@@ -414,6 +431,7 @@
                  (:header "folks" :min-width 5 :align :right)
                  (:header "wines" :min-width 5 :align :right)
                  (:header "wavg" :min-width 6 :align :right)
+                 (:header "" :min-width 1)
                  (:header "price" :min-width 10 :align :right)
                  (:header "qpr" :min-width 6 :align :right))
       :rows (-concat
@@ -425,6 +443,7 @@
                          ""
                          (number-to-string total-participants)
                          (number-to-string total-wines)
+                         ""
                          ""
                          ""
                          (brb-price-format total-gain))))
