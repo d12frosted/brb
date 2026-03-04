@@ -1547,18 +1547,19 @@ DATA, PARTICIPANTS, WINES, HOST, and BALANCES are used to compute the statement.
     (vui-vstack
      (vui-text "Settings" :face 'org-level-2)
      (vui-newline)
-     (vui-hstack
-      (vui-text "Use balance: ")
-      (vui-button (if (string= use-balance "true") "X" " ")
-        :on-click (lambda ()
-                    (let ((new-val (if (string= use-balance "true") "false" "true")))
-                      (funcall (plist-get actions :set-event-meta) "use balance" new-val)))))
-     (vui-hstack
-      (vui-text "Pay URL: ")
-      (vui-button (or pay-url "not set")
-        :on-click (lambda ()
-                    (let ((url (read-string "Pay URL: " (or pay-url ""))))
-                      (funcall (plist-get actions :set-event-meta) "pay url" url)))))
+     (vui-table
+      :columns '((:width 14) (:width 20))
+      :rows (list
+             (list "Use balance:"
+                   (vui-button (if (string= use-balance "true") "X" " ")
+                     :on-click (lambda ()
+                                 (let ((new-val (if (string= use-balance "true") "false" "true")))
+                                   (funcall (plist-get actions :set-event-meta) "use balance" new-val)))))
+             (list "Pay URL:"
+                   (vui-button (or pay-url "not set")
+                     :on-click (lambda ()
+                                 (let ((url (read-string "Pay URL: " (or pay-url ""))))
+                                   (funcall (plist-get actions :set-event-meta) "pay url" url)))))))
      (vui-newline))))
 
 
