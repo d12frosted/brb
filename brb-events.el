@@ -324,13 +324,17 @@
         (vui-text (format "Undated Events (%d)" (length events-undated)) :face 'org-level-3)
         (vui-newline)
         (vui-table
-         :columns '((:header "" :min-width 3)
+         :columns '((:header "date" :min-width 10)
+                    (:header "" :min-width 3)
                     (:header "" :min-width 3)
                     (:header "event" :width 30 :truncate t)
                     (:header "location" :min-width 10)
                     (:header "host" :min-width 10))
          :rows (--map
                 (list
+                 (vui-button "-"
+                   :on-click (lambda ()
+                               (brb-events--set-date it reload-fn)))
                  (vui-button "P"
                    :on-click (lambda () (brb-event-plan it)))
                  (concat
