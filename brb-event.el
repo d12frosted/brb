@@ -442,10 +442,13 @@ PARTICIPANTS is list of `vulpea-note' for all participants."
                       (total . ,glass-price)
                       (wine . ,wine))))
                  (--filter (alist-get 'wine it)))))
+         ;; Always compute own orders/extras for display purposes
+         (own-order (funcall get-orders-for pid))
+         (own-extra (funcall get-extras-for pid))
          ;; If someone is paying for this participant, they get 0 orders/extras
          ;; Otherwise get their own orders/extras
-         (order (if paid-by nil (funcall get-orders-for pid)))
-         (extra (if paid-by nil (funcall get-extras-for pid)))
+         (order (if paid-by nil own-order))
+         (extra (if paid-by nil own-extra))
          ;; Add orders for people we're paying for
          (paying-for-orders
           (if paying-for
@@ -488,6 +491,8 @@ PARTICIPANTS is list of `vulpea-note' for all participants."
       (paid-by . ,paid-by)
       (order . ,order)
       (extra . ,extra)
+      (own-order . ,own-order)
+      (own-extra . ,own-extra)
       (total . ,total)
       (due . ,due))))
 

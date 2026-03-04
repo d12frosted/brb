@@ -1670,8 +1670,50 @@ DATA, PARTICIPANTS, WINES, HOST, and BALANCES are used to compute the statement.
                              :balances balances
                              :participants participants))
                         (paid-by-id (alist-get 'paid-by st)))
-                   ;; Skip participants who are paid for by someone else
-                   (unless paid-by-id
+                   (if paid-by-id
+                       ;; Simplified invoice for participants paid by someone else
+                       (let* ((payer (--find (string-equal paid-by-id (vulpea-note-id it)) participants))
+                              (payer-name (if payer (vulpea-note-title payer) paid-by-id))
+                              (own-order (alist-get 'own-order st))
+                              (own-extra (alist-get 'own-extra st))
+                              (own-total (+ (-sum (--map (alist-get 'total it) own-order))
+                                            (-sum (--map (alist-get 'glass-price it) own-extra))))
+                              (raw-balance (or (gethash pid balances) 0))
+                              (own-balance-final (- raw-balance own-total)))
+                         (vui-vstack
+                          (vui-text name :face 'org-level-3)
+                          (vui-newline)
+                          (vui-text (format "Paid by: %s" payer-name))
+                          (vui-newline)
+                          ;; Consumption breakdown
+                          (when (or own-order own-extra)
+                            (vui-table
+                             :columns '((:width 44 :truncate t)
+                                        (:width 12 :align :right))
+                             :rows (append
+                                    (--map (list (alist-get 'item it)
+                                                 (brb-price-format (alist-get 'total it)))
+                                           own-order)
+                                    (--map (list (format "Extra: %s"
+                                                         (vulpea-note-title (alist-get 'wine it)))
+                                                 (brb-price-format (alist-get 'total it)))
+                                           own-extra)
+                                    (list :separator)
+                                    (list (list (vui-text "Total" :face 'bold)
+                                                (vui-text (brb-price-format own-total) :face 'bold)))
+                                    (when (and use-balance (not (= raw-balance 0)))
+                                      (list
+                                       (list "Final balance"
+                                             (brb-price-format own-balance-final)))))))
+                          ;; Copy button
+                          (vui-newline)
+                          (vui-button "Copy Invoice"
+                            :on-click (lambda ()
+                                        (brb-plan--copy-invoice event person st use-balance 0
+                                                                data wines balances host)))
+                          (vui-newline)
+                          (vui-newline)))
+                     ;; Full invoice for participants who pay for themselves
                      (let* ((fee (alist-get 'fee st))
                             (base-fee (alist-get 'base-fee st))
                             (paying-for (alist-get 'paying-for st))
@@ -1806,24 +1848,7 @@ CURRENT-PAYEES is list of IDs already being paid for."
 STATEMENT contains the amounts, USE-BALANCE and BALANCE control balance display.
 DATA, WINES, BALANCES, and HOST are used for per-payee balance breakdown."
   (let* ((event-name (vulpea-note-title event))
-         (fee (alist-get 'fee statement))
-         (base-fee (alist-get 'base-fee statement))
-         (paying-for (alist-get 'paying-for statement))
-         (paying-for-fees (alist-get 'paying-for-fees statement))
-         (order (alist-get 'order statement))
-         (extra (alist-get 'extra statement))
-         (paying-for-orders (alist-get 'paying-for-orders statement))
-         (paying-for-extras (alist-get 'paying-for-extras statement))
-         (total (alist-get 'total statement))
-         (due (alist-get 'due statement))
-         (pay-url (vulpea-note-meta-get event "pay url" 'link))
-         (payee-names (when paying-for
-                        (mapconcat
-                         (lambda (id)
-                           (let ((n (vulpea-db-get-by-id id)))
-                             (if n (vulpea-note-title n) id)))
-                         paying-for
-                         ", ")))
+         (paid-by-id (alist-get 'paid-by statement))
          (lines nil))
     ;; Greeting
     (push (format "\U0001F44B Thank you for participating in %s!" event-name) lines)
@@ -1835,86 +1860,141 @@ DATA, WINES, BALANCES, and HOST are used for per-payee balance breakdown."
                 (post-url (format "https://barberry.io/posts/%s-%s.html" date slug)))
       (push (format "\U0001F4CB Tasted wines and winners on Barberry Garden - %s" post-url) lines)
       (push "" lines))
-    ;; Receipt header
-    (push "\U0001F9FE Your receipt:" lines)
-    (push "" lines)
-    ;; Starting balance
-    (when (and use-balance (not (= balance 0)))
-      (let ((own-balance (alist-get 'own-balance statement)))
-        (if (and paying-for balances)
-            ;; Show breakdown: own balance + per-payee transfers
-            (let ((host-id (when host (vulpea-note-id host))))
-              (when (and own-balance (> own-balance 0))
-                (push (format "- Starting balance: %s" (brb-price-format own-balance)) lines))
-              (dolist (payee-id paying-for)
-                (let* ((payee-bal (or (gethash payee-id balances) 0))
-                       (payee-portion (brb-event--participant-portion
-                                       event payee-id data wines host-id))
-                       (transfer (min payee-bal payee-portion)))
-                  (when (> transfer 0)
-                    (let ((payee (vulpea-db-get-by-id payee-id)))
-                      (push (format "- Balance from %s: %s"
-                                    (if payee (vulpea-note-title payee) payee-id)
-                                    (brb-price-format transfer))
-                            lines))))))
-          ;; No payees or no balances data, show combined
-          (push (format "- Starting balance: %s" (brb-price-format balance)) lines))))
-    ;; Event fee
-    (if (and paying-for (> paying-for-fees 0))
-        (progn
-          (push (format "- Event fee (self): %s" (brb-price-format base-fee)) lines)
-          (push (format "- Event fee for %s: %s"
-                        payee-names (brb-price-format paying-for-fees))
-                lines))
-      (push (format "- Event fee: %s" (brb-price-format fee)) lines))
-    ;; Orders
-    (--each order
-      (let* ((amount (alist-get 'amount it))
-             (item (alist-get 'item it)))
-        (push (format "- %s: %s"
-                      (if (> amount 1) (format "%s (x%d)" item amount) item)
-                      (brb-price-format (alist-get 'total it)))
-              lines)))
-    ;; Extras
-    (--each extra
-      (push (format "- Extra %s: %s"
-                    (vulpea-note-title (alist-get 'wine it))
-                    (brb-price-format (alist-get 'total it)))
-            lines))
-    ;; Paying-for orders
-    (--each paying-for-orders
-      (let* ((amount (alist-get 'amount it))
-             (item (alist-get 'item it)))
-        (push (format "- %s (%s): %s"
-                      (if (> amount 1) (format "%s (x%d)" item amount) item)
-                      payee-names
-                      (brb-price-format (alist-get 'total it)))
-              lines)))
-    ;; Paying-for extras
-    (--each paying-for-extras
-      (push (format "- Extra %s (%s): %s"
-                    (vulpea-note-title (alist-get 'wine it))
-                    payee-names
-                    (brb-price-format (alist-get 'total it)))
-            lines))
-    ;; Total
-    (push "" lines)
-    (push (format "Total: %s" (brb-price-format total)) lines)
-    ;; Due (when balance is used and non-zero)
-    (when (and use-balance (not (= balance 0)))
-      (push (format "Due: %s" (brb-price-format due)) lines))
-    ;; Payment info (only when there's something to pay)
-    (when (> due 0)
-      (let* ((invoice-host (or host (vulpea-note-meta-get event "host" 'note)))
-             (cc-mono (when invoice-host (vulpea-note-meta-get invoice-host "cc mono")))
-             (cc-ukrsib (when invoice-host (vulpea-note-meta-get invoice-host "cc ukrsib"))))
+    (if paid-by-id
+        ;; Simplified invoice for participants paid by someone else
+        (let* ((payer (vulpea-db-get-by-id paid-by-id))
+               (payer-name (if payer (vulpea-note-title payer) paid-by-id))
+               (own-order (alist-get 'own-order statement))
+               (own-extra (alist-get 'own-extra statement))
+               (own-total (+ (-sum (--map (alist-get 'total it) own-order))
+                             (-sum (--map (alist-get 'glass-price it) own-extra))))
+               (pid (vulpea-note-id person))
+               (raw-balance (or (when balances (gethash pid balances)) 0))
+               (own-balance-final (- raw-balance own-total)))
+          ;; Receipt
+          (when (or own-order own-extra)
+            (push "\U0001F9FE Your receipt:" lines)
+            (push "" lines)
+            (--each own-order
+              (let* ((amount (alist-get 'amount it))
+                     (item (alist-get 'item it)))
+                (push (format "- %s: %s"
+                              (if (> amount 1) (format "%s (x%d)" item amount) item)
+                              (brb-price-format (alist-get 'total it)))
+                      lines)))
+            (--each own-extra
+              (push (format "- Extra %s: %s"
+                            (vulpea-note-title (alist-get 'wine it))
+                            (brb-price-format (alist-get 'total it)))
+                    lines))
+            (push "" lines)
+            (push (format "Total: %s" (brb-price-format own-total)) lines)
+            (when (and use-balance (not (= raw-balance 0)))
+              (push (format "Final balance: %s" (brb-price-format own-balance-final)) lines)))
+          ;; Payer info
+          (push "" lines)
+          (push (format "\U0001F91D Paid by: %s" payer-name) lines))
+      ;; Full invoice for participants who pay for themselves
+      (let* ((fee (alist-get 'fee statement))
+             (base-fee (alist-get 'base-fee statement))
+             (paying-for (alist-get 'paying-for statement))
+             (paying-for-fees (alist-get 'paying-for-fees statement))
+             (order (alist-get 'order statement))
+             (extra (alist-get 'extra statement))
+             (paying-for-orders (alist-get 'paying-for-orders statement))
+             (paying-for-extras (alist-get 'paying-for-extras statement))
+             (total (alist-get 'total statement))
+             (due (alist-get 'due statement))
+             (pay-url (vulpea-note-meta-get event "pay url" 'link))
+             (payee-names (when paying-for
+                            (mapconcat
+                             (lambda (id)
+                               (let ((n (vulpea-db-get-by-id id)))
+                                 (if n (vulpea-note-title n) id)))
+                             paying-for
+                             ", "))))
+        ;; Receipt header
+        (push "\U0001F9FE Your receipt:" lines)
         (push "" lines)
-        (when pay-url
-          (push (format "\U0001F4B8 %s" pay-url) lines))
-        (when cc-mono
-          (push (format "\U0001F4B3 mono: %s" cc-mono) lines))
-        (when cc-ukrsib
-          (push (format "\U0001F4B3 ukrsib: %s" cc-ukrsib) lines))))
+        ;; Starting balance
+        (when (and use-balance (not (= balance 0)))
+          (let ((own-balance (alist-get 'own-balance statement)))
+            (if (and paying-for balances)
+                ;; Show breakdown: own balance + per-payee transfers
+                (let ((host-id (when host (vulpea-note-id host))))
+                  (when (and own-balance (> own-balance 0))
+                    (push (format "- Starting balance: %s" (brb-price-format own-balance)) lines))
+                  (dolist (payee-id paying-for)
+                    (let* ((payee-bal (or (gethash payee-id balances) 0))
+                           (payee-portion (brb-event--participant-portion
+                                           event payee-id data wines host-id))
+                           (transfer (min payee-bal payee-portion)))
+                      (when (> transfer 0)
+                        (let ((payee (vulpea-db-get-by-id payee-id)))
+                          (push (format "- Balance from %s: %s"
+                                        (if payee (vulpea-note-title payee) payee-id)
+                                        (brb-price-format transfer))
+                                lines))))))
+              ;; No payees or no balances data, show combined
+              (push (format "- Starting balance: %s" (brb-price-format balance)) lines))))
+        ;; Event fee
+        (if (and paying-for (> paying-for-fees 0))
+            (progn
+              (push (format "- Event fee (self): %s" (brb-price-format base-fee)) lines)
+              (push (format "- Event fee for %s: %s"
+                            payee-names (brb-price-format paying-for-fees))
+                    lines))
+          (push (format "- Event fee: %s" (brb-price-format fee)) lines))
+        ;; Orders
+        (--each order
+          (let* ((amount (alist-get 'amount it))
+                 (item (alist-get 'item it)))
+            (push (format "- %s: %s"
+                          (if (> amount 1) (format "%s (x%d)" item amount) item)
+                          (brb-price-format (alist-get 'total it)))
+                  lines)))
+        ;; Extras
+        (--each extra
+          (push (format "- Extra %s: %s"
+                        (vulpea-note-title (alist-get 'wine it))
+                        (brb-price-format (alist-get 'total it)))
+                lines))
+        ;; Paying-for orders
+        (--each paying-for-orders
+          (let* ((amount (alist-get 'amount it))
+                 (item (alist-get 'item it)))
+            (push (format "- %s (%s): %s"
+                          (if (> amount 1) (format "%s (x%d)" item amount) item)
+                          payee-names
+                          (brb-price-format (alist-get 'total it)))
+                  lines)))
+        ;; Paying-for extras
+        (--each paying-for-extras
+          (push (format "- Extra %s (%s): %s"
+                        (vulpea-note-title (alist-get 'wine it))
+                        payee-names
+                        (brb-price-format (alist-get 'total it)))
+                lines))
+        ;; Total
+        (push "" lines)
+        (push (format "Total: %s" (brb-price-format total)) lines)
+        ;; Balance and due (when balance is used and non-zero)
+        (when (and use-balance (not (= balance 0)))
+          (let ((balance-final (alist-get 'balance-final statement)))
+            (push (format "Final balance: %s" (brb-price-format balance-final)) lines)
+            (push (format "Due: %s" (brb-price-format due)) lines)))
+        ;; Payment info (only when there's something to pay)
+        (when (> due 0)
+          (let* ((invoice-host (or host (vulpea-note-meta-get event "host" 'note)))
+                 (cc-mono (when invoice-host (vulpea-note-meta-get invoice-host "cc mono")))
+                 (cc-ukrsib (when invoice-host (vulpea-note-meta-get invoice-host "cc ukrsib"))))
+            (push "" lines)
+            (when pay-url
+              (push (format "\U0001F4B8 %s" pay-url) lines))
+            (when cc-mono
+              (push (format "\U0001F4B3 mono: %s" cc-mono) lines))
+            (when cc-ukrsib
+              (push (format "\U0001F4B3 ukrsib: %s" cc-ukrsib) lines))))))
     ;; Closing
     (push "" lines)
     (push "\U0001F64C Cheers! See you next time!" lines)
