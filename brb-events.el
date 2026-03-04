@@ -93,8 +93,10 @@
 
 ;;; Root Component
 
-(vui-defcomponent brb-events-app (frame range)
+(vui-defcomponent brb-events-app (initial-frame initial-range)
   :state ((events-all nil)
+          (frame initial-frame)
+          (range initial-range)
           (filter "internal")
           (tab "overview")
           (participant-filter nil))
@@ -134,6 +136,19 @@
            (lambda (person)
              (vui-set-state :participant-filter person))
 
+           :set-frame
+           (lambda (new-frame)
+             (let* ((new-range (pcase new-frame
+                                 (`custom (list
+                                           (org-read-date nil nil nil "From (inclusive)")
+                                           (org-read-date nil nil nil "To (exclusive)")))
+                                 (_ (brb-time-frame-range new-frame))))
+                    (events (-concat (apply #'brb-events-from-range new-range)
+                                     (brb-events-without-date))))
+               (vui-set-state :frame new-frame)
+               (vui-set-state :range new-range)
+               (vui-set-state :events-all events)))
+
            :reload-events
            (lambda ()
              (let ((events (-concat (apply #'brb-events-from-range range)
@@ -144,7 +159,7 @@
       (brb-events-actions-provider actions
         (vui-vstack
          (vui-component 'brb-events-header
-           :tab tab :filter filter :range range
+           :tab tab :filter filter :frame frame :range range
            :participant-filter participant-filter)
          (pcase tab
            ("overview" (vui-component 'brb-events-tab-overview))
@@ -154,16 +169,30 @@
 
 ;;; Header Component
 
-(vui-defcomponent brb-events-header (tab filter range participant-filter)
+(vui-defcomponent brb-events-header (tab filter frame range participant-filter)
   :render
-  (let ((actions (use-brb-events-actions)))
+  (let* ((actions (use-brb-events-actions))
+         (set-frame (plist-get actions :set-frame)))
     (vui-vstack
      (vui-text "Barberry Garden Events" :face 'org-level-1)
      (vui-text (format "from %s to %s" (nth 0 range) (nth 1 range)))
      (vui-newline)
-     ;; Filter buttons
+     ;; Date frame buttons
      (vui-hstack
       :spacing 1
+      (vui-text "Range:")
+      (--map
+       (let* ((f it)
+              (name (symbol-name f))
+              (active (eq f frame)))
+         (vui-button (if active (format "*%s*" name) name)
+           :face (when active 'bold)
+           :on-click (lambda () (funcall set-frame f))))
+       (cons 'custom brb-time-frames)))
+     ;; Type filter buttons
+     (vui-hstack
+      :spacing 1
+      (vui-text "Type:")
       (vui-button (if (string= filter "all") "*all*" "all")
         :face (when (string= filter "all") 'bold)
         :on-click (lambda () (funcall (plist-get actions :set-filter) "all")))
@@ -895,7 +924,7 @@ ARG to override and query for specific frame."
                             (org-read-date nil nil nil "To (exclusive)")))
                   (_ (brb-time-frame-range frame))))
          (buffer-name (format "*barberry garden events*")))
-    (vui-mount (vui-component 'brb-events-app :frame frame :range range)
+    (vui-mount (vui-component 'brb-events-app :initial-frame frame :initial-range range)
                buffer-name)
     (switch-to-buffer buffer-name)))
 
