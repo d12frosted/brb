@@ -275,9 +275,18 @@
                     (:header "host" :min-width 10)
                     (:header "folks" :min-width 5 :align :right)
                     (:header "wines" :min-width 5 :align :right)
-                    (:header "price" :min-width 10 :align :right))
+                    (:header "price" :min-width 10 :align :right)
+                    (:header "status" :min-width 6 :truncate t))
          :rows (--map
-                (let ((wines (brb-event-wines it)))
+                (let* ((wines (brb-event-wines it))
+                       (location (vulpea-note-meta-get it "location" 'note))
+                       (host (vulpea-note-meta-get it "host" 'note))
+                       (price (vulpea-note-meta-get it "price" 'number))
+                       (missing (append
+                                 (unless location '("loc"))
+                                 (unless host '("host"))
+                                 (unless (> (seq-length wines) 0) '("wines"))
+                                 (unless price '("price")))))
                   (list
                    (vui-button (brb-event-date-string it)
                      :on-click (lambda ()
@@ -290,13 +299,11 @@
                    (vui-button (vulpea-note-title it)
                      :on-click (lambda () (vulpea-visit it)))
                    (vui-button
-                       (if-let* ((location (vulpea-note-meta-get it "location" 'note)))
-                           (vulpea-note-title location)
-                         "<unknown>")
+                       (if location (vulpea-note-title location) "<unknown>")
                      :on-click (lambda ()
                                  (brb-events--set-location it reload-fn)))
                    (vui-button
-                       (if-let* ((host (vulpea-note-meta-get it "host" 'note)))
+                       (if host
                            (or (vulpea-note-meta-get host "public name")
                                (vulpea-note-title host))
                          "<unknown>")
@@ -304,7 +311,10 @@
                                  (brb-events--set-host it reload-fn)))
                    (number-to-string (seq-length (brb-event-participants it)))
                    (number-to-string (seq-length wines))
-                   (brb-price-format (vulpea-note-meta-get it "price" 'number))))
+                   (brb-price-format price)
+                   (if missing
+                       (vui-text (string-join missing ",") :face 'error)
+                     (vui-text "\u2713" :face 'success))))
                 events-future)
          :border :ascii)
         (vui-newline)))
