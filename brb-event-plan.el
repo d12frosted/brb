@@ -1438,6 +1438,7 @@ DATA and WINES-DATA provide the current state."
   (vui-vstack
    (vui-component 'brb-plan-invoice-actions)
    (vui-component 'brb-plan-invoice-settings)
+   (vui-component 'brb-plan-invoice-summary)
    (vui-component 'brb-plan-invoices-personal)))
 
 
@@ -1593,6 +1594,55 @@ DATA, PARTICIPANTS, WINES, HOST, and BALANCES are used to compute the statement.
      (vui-newline))))
 
 
+;;; Invoice Summary
+
+(vui-defcomponent brb-plan-invoice-summary ()
+  :render
+  (let* ((event (use-brb-plan-event))
+         (data (use-brb-plan-data))
+         (participants (use-brb-plan-participants))
+         (wines (use-brb-plan-wines))
+         (host (use-brb-plan-host))
+         (balances (or (use-brb-plan-balances) (make-hash-table :test 'equal)))
+         (paired (-zip-pair participants
+                            (--map (brb-event-statement-for
+                                    event it
+                                    :data data :host host :wines wines
+                                    :balances balances :participants participants)
+                                   participants)))
+         ;; Filter out host and participants paid by someone else
+         (active (--remove (or (alist-get 'paid-by (cdr it))
+                               (string= "host" (alist-get 'mode (cdr it))))
+                           paired))
+         (active-statements (--map (cdr it) active))
+         (total-charged (-sum (--map (alist-get 'total it) active-statements)))
+         (total-due (-sum (--map (alist-get 'due it) active-statements)))
+         (remaining-balance (-sum (--map (max 0 (alist-get 'balance-final it))
+                                         active-statements)))
+         (owing (--filter (> (alist-get 'due (cdr it)) 0) active))
+         (count-covered (- (length active) (length owing))))
+    (vui-vstack
+     (vui-text "Summary" :face 'org-level-2)
+     (vui-newline)
+     (vui-table
+      :columns '((:width 24) (:width 14 :align :right))
+      :rows (append
+             (list
+              (list "Total charged" (brb-price-format total-charged))
+              (list (vui-text "Total due" :face (if (> total-due 0) 'error 'success))
+                    (vui-text (brb-price-format total-due)
+                      :face (if (> total-due 0) 'error 'success)))
+              (list "Remaining balance" (brb-price-format remaining-balance))
+              :separator
+              (list (vui-text "Covered" :face 'success)
+                    (vui-text (format "%d" count-covered) :face 'success)))
+             (--map (list (vui-text (vulpea-note-title (car it)) :face 'error)
+                          (vui-text (brb-price-format (alist-get 'due (cdr it)))
+                            :face 'error))
+                    owing)))
+     (vui-newline))))
+
+
 ;;; Per-Participant Invoices
 
 (vui-defcomponent brb-plan-invoices-personal ()
@@ -1630,6 +1680,13 @@ DATA, PARTICIPANTS, WINES, HOST, and BALANCES are used to compute the statement.
                             (extra (alist-get 'extra st))
                             (paying-for-orders (alist-get 'paying-for-orders st))
                             (paying-for-extras (alist-get 'paying-for-extras st))
+                            (payee-names (when paying-for
+                                           (mapconcat
+                                            (lambda (id)
+                                              (let ((n (--find (string-equal id (vulpea-note-id it)) participants)))
+                                                (if n (vulpea-note-title n) id)))
+                                            paying-for
+                                            ", ")))
                             (total (alist-get 'total st))
                             (balance (alist-get 'balance st))
                             (balance-final (alist-get 'balance-final st))
@@ -1687,7 +1744,7 @@ DATA, PARTICIPANTS, WINES, HOST, and BALANCES are used to compute the statement.
                                 (if (and paying-for (> paying-for-fees 0))
                                     (list
                                      (list "Event fee (self)" (brb-price-format base-fee))
-                                     (list (format "Event fee (%d others)" (length paying-for))
+                                     (list (format "Event fee for %s" payee-names)
                                            (brb-price-format paying-for-fees)))
                                   (list (list "Event fee" (brb-price-format fee))))
                                 ;; Orders
@@ -1700,12 +1757,13 @@ DATA, PARTICIPANTS, WINES, HOST, and BALANCES are used to compute the statement.
                                              (brb-price-format (alist-get 'total it)))
                                        extra)
                                 ;; Orders for people we're paying for
-                                (--map (list (format "Order (others): %s" (alist-get 'item it))
+                                (--map (list (format "%s (%s)" (alist-get 'item it) payee-names)
                                              (brb-price-format (alist-get 'total it)))
                                        paying-for-orders)
                                 ;; Extras for people we're paying for
-                                (--map (list (format "Extra (others): %s"
-                                                     (vulpea-note-title (alist-get 'wine it)))
+                                (--map (list (format "Extra: %s (%s)"
+                                                     (vulpea-note-title (alist-get 'wine it))
+                                                     payee-names)
                                              (brb-price-format (alist-get 'total it)))
                                        paying-for-extras)
                                 ;; Separator and totals
@@ -1759,6 +1817,13 @@ DATA, WINES, BALANCES, and HOST are used for per-payee balance breakdown."
          (total (alist-get 'total statement))
          (due (alist-get 'due statement))
          (pay-url (vulpea-note-meta-get event "pay url" 'link))
+         (payee-names (when paying-for
+                        (mapconcat
+                         (lambda (id)
+                           (let ((n (vulpea-db-get-by-id id)))
+                             (if n (vulpea-note-title n) id)))
+                         paying-for
+                         ", ")))
          (lines nil))
     ;; Greeting
     (push (format "\U0001F44B Thank you for participating in %s!" event-name) lines)
@@ -1798,8 +1863,8 @@ DATA, WINES, BALANCES, and HOST are used for per-payee balance breakdown."
     (if (and paying-for (> paying-for-fees 0))
         (progn
           (push (format "- Event fee (self): %s" (brb-price-format base-fee)) lines)
-          (push (format "- Event fee (%d others): %s"
-                        (length paying-for) (brb-price-format paying-for-fees))
+          (push (format "- Event fee for %s: %s"
+                        payee-names (brb-price-format paying-for-fees))
                 lines))
       (push (format "- Event fee: %s" (brb-price-format fee)) lines))
     ;; Orders
@@ -1820,16 +1885,16 @@ DATA, WINES, BALANCES, and HOST are used for per-payee balance breakdown."
     (--each paying-for-orders
       (let* ((amount (alist-get 'amount it))
              (item (alist-get 'item it)))
-        (push (format "- %s: %s"
-                      (if (> amount 1)
-                          (format "%s (others, x%d)" item amount)
-                        (format "%s (others)" item))
+        (push (format "- %s (%s): %s"
+                      (if (> amount 1) (format "%s (x%d)" item amount) item)
+                      payee-names
                       (brb-price-format (alist-get 'total it)))
               lines)))
     ;; Paying-for extras
     (--each paying-for-extras
-      (push (format "- Extra %s (others): %s"
+      (push (format "- Extra %s (%s): %s"
                     (vulpea-note-title (alist-get 'wine it))
+                    payee-names
                     (brb-price-format (alist-get 'total it)))
             lines))
     ;; Total
@@ -1840,9 +1905,9 @@ DATA, WINES, BALANCES, and HOST are used for per-payee balance breakdown."
       (push (format "Due: %s" (brb-price-format due)) lines))
     ;; Payment info (only when there's something to pay)
     (when (> due 0)
-      (let* ((host (vulpea-note-meta-get event "host" 'note))
-             (cc-mono (when host (vulpea-note-meta-get host "cc mono")))
-             (cc-ukrsib (when host (vulpea-note-meta-get host "cc ukrsib"))))
+      (let* ((invoice-host (or host (vulpea-note-meta-get event "host" 'note)))
+             (cc-mono (when invoice-host (vulpea-note-meta-get invoice-host "cc mono")))
+             (cc-ukrsib (when invoice-host (vulpea-note-meta-get invoice-host "cc ukrsib"))))
         (push "" lines)
         (when pay-url
           (push (format "\U0001F4B8 %s" pay-url) lines))
