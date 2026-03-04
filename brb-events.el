@@ -191,70 +191,19 @@
                                          :balances (make-hash-table))
                                        tbl))
                             tbl)))
-         (render-event
-          (lambda (event &optional show-gain)
-            (let* ((wines (brb-event-wines event))
-                   (date (brb-event-date-string event))
-                   (gain (when show-gain
-                           (alist-get 'balance-real
-                                      (gethash (vulpea-note-id event) statement-tbl)))))
-              (list
-               (vui-button (or date "-")
-                 :on-click (lambda ()
-                             (brb-events--set-date event reload-fn)))
-               (vui-button "P"
-                 :on-click (lambda () (brb-event-plan event)))
-               (concat
-                (if (vulpea-note-tagged-any-p event "external") "E" "I")
-                (if (string-equal "true" (vulpea-note-meta-get event "publish")) "+" "-"))
-               (vui-button (vulpea-note-title event)
-                 :on-click (lambda () (vulpea-visit event)))
-               (vui-button
-                   (if-let* ((location (vulpea-note-meta-get event "location" 'note)))
-                       (vulpea-note-title location)
-                     "<unknown>")
-                 :on-click (lambda ()
-                             (brb-events--set-location event reload-fn)))
-               (vui-button
-                   (if-let* ((host (vulpea-note-meta-get event "host" 'note)))
-                       (or (vulpea-note-meta-get host "public name")
-                           (vulpea-note-title host))
-                     "<unknown>")
-                 :on-click (lambda ()
-                             (brb-events--set-host event reload-fn)))
-               (number-to-string (seq-length (brb-event-participants event)))
-               (number-to-string (seq-length wines))
-               (brb-price-format (vulpea-note-meta-get event "price" 'number))
-               (if gain (brb-price-format gain) "")))))
-
-         (splitted (--split-with
-                    (let ((date (brb-event-date-string it)))
-                      (and date (string< date today)))
-                    events))
-         (events-past (nth 0 splitted))
-         (events-future (nth 1 splitted))
-         (total-participants (--reduce-from
-                              (+ acc (seq-length (brb-event-participants it)))
-                              0 events))
-         (total-wines (--reduce-from
-                       (+ acc (seq-length (brb-event-wines it)))
-                       0 events))
+         (events-past (--filter (let ((date (brb-event-date-string it)))
+                                  (and date (string< date today)))
+                               events))
+         (events-future (--filter (let ((date (brb-event-date-string it)))
+                                    (and date (not (string< date today))))
+                                  events))
+         (events-undated (--filter (not (brb-event-date-string it)) events))
          (total-gain (->> events-past
                           (--reduce-from
                            (+ acc (or (alist-get 'balance-real
                                                  (gethash (vulpea-note-id it) statement-tbl))
                                       0))
-                           0)))
-         (table-rows (-concat
-                      (--map (funcall render-event it t) events-past)
-                      (when (and events-past events-future) '(:separator))
-                      (--map (funcall render-event it nil) events-future)
-                      '(:separator)
-                      (list (list "" "" "" "" "" ""
-                                  (number-to-string total-participants)
-                                  (number-to-string total-wines)
-                                  ""
-                                  (brb-price-format total-gain))))))
+                           0))))
     (vui-vstack
      (vui-hstack
       (vui-text (format "Events (%d) " (seq-length events)) :face 'org-level-2)
@@ -263,20 +212,120 @@
                     (brb-event-create)
                     (funcall reload-fn))))
      (vui-newline)
-     (vui-table
-      :columns '((:header "date" :min-width 10)
-                 (:header "" :min-width 3)
-                 (:header "" :min-width 3)
-                 (:header "event" :width 30)
-                 (:header "location" :min-width 10)
-                 (:header "host" :min-width 10)
-                 (:header "folks" :min-width 5 :align :right)
-                 (:header "wines" :min-width 5 :align :right)
-                 (:header "price" :min-width 10 :align :right)
-                 (:header "gain" :min-width 10 :align :right))
-      :rows table-rows
-      :border :ascii)
-     (vui-newline))))
+     ;; Past Events
+     (when events-past
+       (vui-vstack
+        (vui-text (format "Past Events (%d)" (length events-past)) :face 'org-level-3)
+        (vui-newline)
+        (vui-table
+         :columns '((:header "date" :min-width 10)
+                    (:header "" :min-width 3)
+                    (:header "" :min-width 3)
+                    (:header "event" :width 30)
+                    (:header "gain" :min-width 10 :align :right))
+         :rows (append
+                (--map
+                 (let ((gain (alist-get 'balance-real
+                                        (gethash (vulpea-note-id it) statement-tbl))))
+                   (list
+                    (brb-event-date-string it)
+                    (vui-button "P"
+                      :on-click (lambda () (brb-event-plan it)))
+                    (concat
+                     (if (vulpea-note-tagged-any-p it "external") "E" "I")
+                     (if (string-equal "true" (vulpea-note-meta-get it "publish")) "+" "-"))
+                    (vui-button (vulpea-note-title it)
+                      :on-click (lambda () (vulpea-visit it)))
+                    (if gain (brb-price-format gain) "")))
+                 events-past)
+                '(:separator)
+                (list (list "" "" "" ""
+                            (brb-price-format total-gain))))
+         :border :ascii)
+        (vui-newline)))
+     ;; Future Events
+     (when events-future
+       (vui-vstack
+        (vui-text (format "Future Events (%d)" (length events-future)) :face 'org-level-3)
+        (vui-newline)
+        (vui-table
+         :columns '((:header "date" :min-width 10)
+                    (:header "" :min-width 3)
+                    (:header "" :min-width 3)
+                    (:header "event" :width 30)
+                    (:header "location" :min-width 10)
+                    (:header "host" :min-width 10)
+                    (:header "folks" :min-width 5 :align :right)
+                    (:header "wines" :min-width 5 :align :right)
+                    (:header "price" :min-width 10 :align :right))
+         :rows (--map
+                (let ((wines (brb-event-wines it)))
+                  (list
+                   (vui-button (brb-event-date-string it)
+                     :on-click (lambda ()
+                                 (brb-events--set-date it reload-fn)))
+                   (vui-button "P"
+                     :on-click (lambda () (brb-event-plan it)))
+                   (concat
+                    (if (vulpea-note-tagged-any-p it "external") "E" "I")
+                    (if (string-equal "true" (vulpea-note-meta-get it "publish")) "+" "-"))
+                   (vui-button (vulpea-note-title it)
+                     :on-click (lambda () (vulpea-visit it)))
+                   (vui-button
+                       (if-let* ((location (vulpea-note-meta-get it "location" 'note)))
+                           (vulpea-note-title location)
+                         "<unknown>")
+                     :on-click (lambda ()
+                                 (brb-events--set-location it reload-fn)))
+                   (vui-button
+                       (if-let* ((host (vulpea-note-meta-get it "host" 'note)))
+                           (or (vulpea-note-meta-get host "public name")
+                               (vulpea-note-title host))
+                         "<unknown>")
+                     :on-click (lambda ()
+                                 (brb-events--set-host it reload-fn)))
+                   (number-to-string (seq-length (brb-event-participants it)))
+                   (number-to-string (seq-length wines))
+                   (brb-price-format (vulpea-note-meta-get it "price" 'number))))
+                events-future)
+         :border :ascii)
+        (vui-newline)))
+     ;; Undated Events
+     (when events-undated
+       (vui-vstack
+        (vui-text (format "Undated Events (%d)" (length events-undated)) :face 'org-level-3)
+        (vui-newline)
+        (vui-table
+         :columns '((:header "" :min-width 3)
+                    (:header "" :min-width 3)
+                    (:header "event" :width 30)
+                    (:header "location" :min-width 10)
+                    (:header "host" :min-width 10))
+         :rows (--map
+                (list
+                 (vui-button "P"
+                   :on-click (lambda () (brb-event-plan it)))
+                 (concat
+                  (if (vulpea-note-tagged-any-p it "external") "E" "I")
+                  (if (string-equal "true" (vulpea-note-meta-get it "publish")) "+" "-"))
+                 (vui-button (vulpea-note-title it)
+                   :on-click (lambda () (vulpea-visit it)))
+                 (vui-button
+                     (if-let* ((location (vulpea-note-meta-get it "location" 'note)))
+                         (vulpea-note-title location)
+                       "<unknown>")
+                   :on-click (lambda ()
+                               (brb-events--set-location it reload-fn)))
+                 (vui-button
+                     (if-let* ((host (vulpea-note-meta-get it "host" 'note)))
+                         (or (vulpea-note-meta-get host "public name")
+                             (vulpea-note-title host))
+                       "<unknown>")
+                   :on-click (lambda ()
+                               (brb-events--set-host it reload-fn))))
+                events-undated)
+         :border :ascii)
+        (vui-newline))))))
 
 
 ;;; Stats Tab
