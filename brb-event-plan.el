@@ -1664,7 +1664,25 @@ DATA, PARTICIPANTS, WINES, HOST, and BALANCES are used to compute the statement.
                          :rows (append
                                 ;; Starting balance (if applicable)
                                 (when (and use-balance (not (= balance 0)))
-                                  (list (list "Starting balance" (brb-price-format balance))))
+                                  (let ((own-bal (alist-get 'own-balance st))
+                                        (host-id (when host (vulpea-note-id host))))
+                                    (if paying-for
+                                        ;; Show breakdown: own balance + per-payee transfers
+                                        (append
+                                         (when (and own-bal (> own-bal 0))
+                                           (list (list "Starting balance" (brb-price-format own-bal))))
+                                         (--keep
+                                          (let* ((payee-bal (or (gethash it balances) 0))
+                                                 (payee-portion (brb-event--participant-portion
+                                                                  event it data wines host-id))
+                                                 (transfer (min payee-bal payee-portion)))
+                                            (when (> transfer 0)
+                                              (let ((payee (vulpea-db-get-by-id it)))
+                                                (list (format "Balance from %s"
+                                                              (if payee (vulpea-note-title payee) it))
+                                                      (brb-price-format transfer)))))
+                                          paying-for))
+                                      (list (list "Starting balance" (brb-price-format balance))))))
                                 ;; Event fee
                                 (if (and paying-for (> paying-for-fees 0))
                                     (list
