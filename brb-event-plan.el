@@ -1472,21 +1472,51 @@ DATA and WINES-DATA provide the current state."
 
 (defun brb-plan--charge-all (event data participants wines host balances)
   "Record charges for all PARTICIPANTS of EVENT.
-DATA, WINES, HOST, and BALANCES are used to compute statements."
+DATA, WINES, HOST, and BALANCES are used to compute statements.
+
+When a participant pays for others, transfers each payee's balance
+\(up to their portion of costs) to the payer before charging."
   (let ((date (vulpea-utils-with-note event
-                (vulpea-buffer-prop-get "date"))))
-    (--each participants
-      (unless (and host (string= (vulpea-note-id it) (vulpea-note-id host)))
+                (vulpea-buffer-prop-get "date")))
+        (participants-data (alist-get 'participants data))
+        (host-id (when host (vulpea-note-id host))))
+    ;; Transfer payee balances to payers
+    (dolist (payer participants)
+      (let* ((payer-id (vulpea-note-id payer))
+             (payer-data (--find (string-equal payer-id (alist-get 'id it))
+                                participants-data))
+             (paying-for-ids (alist-get 'pays-for payer-data)))
+        (when paying-for-ids
+          (dolist (payee-id paying-for-ids)
+            (let* ((payee-balance (or (gethash payee-id balances) 0))
+                   (payee-portion (brb-event--participant-portion
+                                   event payee-id data wines host-id))
+                   (transfer (min payee-balance payee-portion)))
+              (when (> transfer 0)
+                (let ((payee (--find (string-equal payee-id (vulpea-note-id it))
+                                    participants)))
+                  (brb-ledger-record-txn
+                   :date (date-to-time date)
+                   :code (concat (vulpea-note-id event) ":transfer:" payee-id)
+                   :comment (format "%s: balance transfer from %s"
+                                    (vulpea-note-title event)
+                                    (if payee (vulpea-note-title payee) payee-id))
+                   :account-to (concat "balance:" payer-id)
+                   :account-from (concat "balance:" payee-id)
+                   :amount transfer))))))))
+    ;; Charge all participants
+    (dolist (p participants)
+      (unless (and host (string= (vulpea-note-id p) host-id))
         (let ((st (brb-event-statement-for
-                   event it
+                   event p
                    :data data
                    :host host
                    :wines wines
                    :balances balances
                    :participants participants)))
           (brb-ledger-charge
-           :convive it
-           :code (concat (vulpea-note-id event) ":" (vulpea-note-id it))
+           :convive p
+           :code (concat (vulpea-note-id event) ":" (vulpea-note-id p))
            :amount (alist-get 'total st)
            :date (date-to-time date)
            :comment (vulpea-note-title event)))))))

@@ -552,6 +552,44 @@ PARTICIPANTS is list of `vulpea-note' for all participants."
       (total . ,total)
       (due . ,due))))
 
+(defun brb-event--participant-portion (event pid data wines &optional host-id)
+  "Compute raw costs for participant PID of EVENT.
+Returns the total amount PID would owe, ignoring balance and paid-by.
+DATA is event data.  WINES is list of wine notes.
+HOST-ID, when non-nil, causes fee to be 0 for the host."
+  (let* ((price (or (vulpea-note-meta-get event "price" 'number) 0))
+         (fee (if (and host-id (string-equal pid host-id))
+                  0
+                (or (->> data
+                         (alist-get 'participants)
+                         (--find (string-equal pid (alist-get 'id it)))
+                         (alist-get 'fee))
+                    price)))
+         (orders-total
+          (->> data
+               (alist-get 'personal)
+               (--map
+                (let* ((od (->> (alist-get 'orders it)
+                                (--find (string-equal pid (alist-get 'participant it)))))
+                       (amount (or (when od (alist-get 'amount od)) 0)))
+                  (* amount (alist-get 'price it))))
+               (-sum)))
+         (extras-total
+          (->> data
+               (alist-get 'wines)
+               (--filter (string-equal "extra" (assoc-default 'type it)))
+               (--filter (-contains-p (assoc-default 'participants it) pid))
+               (--map
+                (let* ((ps (alist-get 'participants it))
+                       (wid (alist-get 'id it))
+                       (pr (or (alist-get 'price-asking it)
+                               (alist-get 'price-public it)))
+                       (glass-price (ceiling (/ pr (float (length ps)))))
+                       (wine (--find (string-equal wid (vulpea-note-id it)) wines)))
+                  (if wine glass-price 0)))
+               (-sum))))
+    (+ fee orders-total extras-total)))
+
 (cl-defun brb-event--glass-price (data)
   "Calculate glass price of an extra wine.
 
