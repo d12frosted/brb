@@ -1050,7 +1050,7 @@
        (vui-table
         :columns (cons '(:header "" :width 16 :truncate t)
                        (--map-indexed
-                        `(:header ,(format "#%d" (1+ it-index)) :width 6)
+                        `(:header ,(format "#%d" (1+ it-index)) :width 7)
                         wines))
         :rows (--map
                (let ((person it)
@@ -1071,7 +1071,7 @@
                                                  ("outcast" "✗")
                                                  (_ (if score " " ""))))
                                (display (format "%s%s"
-                                                (if score (format "%.1f" score) "—")
+                                                (if score (format "%.2f" score) "—")
                                                 sentiment-char)))
                           (vui-button display
                             :on-click (lambda ()
@@ -1094,7 +1094,7 @@ CURRENT-SCORE and CURRENT-SENTIMENT are current values."
      ((string-equal "o" input)
       (brb-plan--sentiment-set actions data wine-id participant-id "outcast"))
      ((string-equal "c" input)
-      (brb-plan--sentiment-set actions data wine-id participant-id nil))
+      (brb-plan--score-clear actions data wine-id participant-id))
      ((string-empty-p input) nil)
      (t
       (let ((score (string-to-number input)))
@@ -1145,6 +1145,19 @@ CURRENT-SCORE and CURRENT-SENTIMENT are current values."
               (scores . (((participant . ,participant-id) (score . nil) (sentiment . ,sentiment)))))
             wines-data))
     (funcall (plist-get actions :update-data) 'wines wines-data)))
+
+(defun brb-plan--score-clear (actions data wine-id participant-id)
+  "Clear score and sentiment for WINE-ID and PARTICIPANT-ID.
+ACTIONS is the actions plist. DATA is the current data."
+  (let* ((wines-data (copy-alist (alist-get 'wines data)))
+         (wine-data (--find (string-equal wine-id (alist-get 'id it)) wines-data)))
+    (when wine-data
+      (let ((score-data (--find (string-equal participant-id (alist-get 'participant it))
+                                (alist-get 'scores wine-data))))
+        (when score-data
+          (setf (alist-get 'score score-data) nil)
+          (setf (alist-get 'sentiment score-data) nil)
+          (funcall (plist-get actions :update-data) 'wines wines-data))))))
 
 
 ;;; Order Tab Components
