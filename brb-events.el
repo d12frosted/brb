@@ -137,15 +137,15 @@
              (vui-set-state :participant-filter person))
 
            :set-frame
-           (lambda (new-frame)
-             (let* ((new-range (pcase new-frame
+           (lambda (time-frame)
+             (let* ((new-range (pcase time-frame
                                  (`custom (list
                                            (org-read-date nil nil nil "From (inclusive)")
                                            (org-read-date nil nil nil "To (exclusive)")))
-                                 (_ (brb-time-frame-range new-frame))))
+                                 (_ (brb-time-frame-range time-frame))))
                     (events (-concat (apply #'brb-events-from-range new-range)
                                      (brb-events-without-date))))
-               (vui-set-state :frame new-frame)
+               (vui-set-state :frame time-frame)
                (vui-set-state :range new-range)
                (vui-set-state :events-all events)))
 
