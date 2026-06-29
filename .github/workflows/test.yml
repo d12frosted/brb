@@ -28,7 +28,7 @@ jobs:
     steps:
     - uses: actions/checkout@v4
 
-    - uses: purcell/setup-emacs@master
+    - uses: d12frosted/setup-emacs@v1
       with:
         version: ${{ matrix.emacs-version }}
 
